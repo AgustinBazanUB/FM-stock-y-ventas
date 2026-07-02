@@ -1,4 +1,4 @@
-const CACHE = "flor-mia-shell-v10";
+const CACHE = "flor-mia-shell-v11";
 const SHELL = [
   "/", "/index.html", "/styles.css", "/firebase-config.js", "/app.js",
   "/auth.js", "/admin.js", "/seller.js", "/keyboard.js", "/utils.js", "/image-catalog.js",

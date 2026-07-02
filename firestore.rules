@@ -8,7 +8,15 @@ service cloud.firestore {
     function allowedLocation(locationId) { return isSeller() && locationId in profile().allowedLocationIds; }
     function activeAllowedLocation(locationId) {
       let location = get(/databases/$(database)/documents/locations/$(locationId)).data;
-      return allowedLocation(locationId) && location.active == true && location.deleted != true;
+      return allowedLocation(locationId) && location.active == true
+        && (!("deleted" in location) || location.deleted != true);
+    }
+    function validPayment(data) {
+      return data.paymentMethod in ["credit", "debit", "alias", "cash"]
+        && ((data.paymentMethod == "credit" && data.paymentMethodLabel == "Pago Credito")
+          || (data.paymentMethod == "debit" && data.paymentMethodLabel == "Pago debito")
+          || (data.paymentMethod == "alias" && data.paymentMethodLabel == "Pago Alias")
+          || (data.paymentMethod == "cash" && data.paymentMethodLabel == "Pago eft"));
     }
 
     match /users/{uid} {
@@ -48,6 +56,7 @@ service cloud.firestore {
         && request.resource.data.sellerId == request.auth.uid
         && activeAllowedLocation(request.resource.data.locationId)
         && request.resource.data.status == "active"
+        && validPayment(request.resource.data)
         && request.resource.data.total >= 0);
       allow update: if isAdmin() || (isSeller()
         && resource.data.sellerId == request.auth.uid
@@ -56,6 +65,7 @@ service cloud.firestore {
         && activeAllowedLocation(resource.data.locationId)
         && resource.data.status == "active"
         && request.resource.data.status in ["active", "cancelled"]
+        && (request.resource.data.status == "cancelled" || validPayment(request.resource.data))
         && request.resource.data.total >= 0);
       allow delete: if false;
     }

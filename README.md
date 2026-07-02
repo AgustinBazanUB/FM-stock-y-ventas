@@ -17,7 +17,7 @@ firebase use fm-stock-y-venta
 firebase deploy --only firestore
 ```
 
-`firebase deploy --only firestore` publica reglas e índices. La configuración opcional de Storage también está incluida; sólo si activás ese servicio en el futuro, publicá sus reglas con `firebase deploy --only storage`.
+`firebase deploy --only firestore` publica reglas e índices. La app no usa Firebase Storage, Cloud Functions ni Analytics: las imágenes se sirven desde Netlify para mantener compatibilidad estricta con Firebase Spark.
 
 No inicializa Analytics y no contiene claves privadas. `firebase-config.js` sólo contiene la configuración pública de la web.
 
@@ -83,9 +83,9 @@ En **Stock**, **Eliminar stock** lo deja en cero y lo oculta de esa ubicación. 
 ## Vender
 
 1. Ingresá como vendedor y elegí ubicación si hay más de una.
-2. Tocá productos o usá sus teclas: la botonera queda activa automáticamente al abrir **Nueva venta**. Se pausa mientras escribís en un campo o hay una ventana abierta y vuelve a enfocarse al continuar.
-3. Corregí cantidades con `+` y `-`, y aplicá un descuento si corresponde.
-4. Tocá **Continuar**. La app valida stock, genera el código, guarda la venta y descuenta unidades en una sola transacción.
+2. Tocá productos o usá sus teclas: la botonera queda activa automáticamente al abrir **Nueva venta**, pero podés desactivarla y volver a activarla cuando quieras.
+3. Corregí cantidades con `+` y `-`, aplicá un descuento si corresponde y elegí una forma de pago.
+4. Tocá **Continuar**. La app exige la forma de pago, valida stock, genera el código, guarda la venta y descuenta unidades en una sola transacción.
 
 El botón **Tiquet** queda reservado para una futura integración fiscal. Sin internet se puede armar el carrito, pero no confirmar: esto evita vender el mismo stock desde dos dispositivos desconectados.
 
@@ -93,11 +93,11 @@ El botón **Tiquet** queda reservado para una futura integración fiscal. Sin in
 
 En el menú del vendedor abrí **Ventas totales**, tocá una venta propia y elegí **Editar** o **Anular**. Editar calcula diferencias; anular cambia el estado a `cancelled`, registra quién y cuándo la anuló, crea movimientos de auditoría y devuelve todas las unidades en la misma transacción. Nada se borra físicamente.
 
-En el administrador, las ventas activas quedan en **Ventas** y las anuladas pasan a **Ventas anuladas**. Desde allí el administrador puede restaurarlas: la app comprueba que todos los productos sigan activos y que haya stock suficiente, vuelve a descontar las unidades y registra movimientos `sale_restore`.
+En el administrador, las ventas activas quedan en **Ventas** y las anuladas aparecen dentro de **Items Eliminados → Ventas anuladas**. Desde allí el administrador puede restaurarlas: la app comprueba que todos los productos sigan activos y que haya stock suficiente, vuelve a descontar las unidades y registra movimientos `sale_restore`.
 
 ## Alertas, métricas y CSV
 
-El resumen administrativo muestra primero alertas rojas y luego amarillas, siempre para la ubicación elegida. También calcula total, cantidad de ventas, productos, ticket promedio, ranking, ventas por vendedor/hora y stock restante sobre las ventas recientes escuchadas en tiempo real.
+El resumen administrativo muestra primero alertas rojas y luego amarillas, siempre para la ubicación elegida. También calcula total, cantidad de ventas, productos, ticket promedio, ranking, ventas por vendedor/hora, ventas por forma de pago y stock restante sobre las ventas recientes escuchadas en tiempo real.
 
 En **Exportar** descargá ventas o stock en CSV. Las ventas se pueden filtrar por fecha y vendedor; la descarga incluye código, fecha/hora, ubicación, vendedor, productos, cantidades, subtotal, descuento, total y estado.
 
@@ -118,7 +118,7 @@ El script agrega productos, tres ubicaciones y descuentos de ejemplo; no crea us
 Si la botonera no responde:
 
 1. Confirmá que siga conectada por Bluetooth.
-2. Tocá **Reactivar botonera**.
+2. Confirmá que muestre **Botonera activa**; si está desactivada, tocá **Activar botonera**.
 3. Revisá Num Lock y el modo Android/iOS del teclado.
 4. Confirmá que Chrome esté activo y que no haya un campo de texto o modal abierto.
 5. Si una tecla envía otro código, volvé a grabarla desde el mismo celular.

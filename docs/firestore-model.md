@@ -6,7 +6,7 @@
 - `locationStock/{locationId}/items/{productId}`: precio, tecla, alertas y stock propios de cada ubicación. Una baja guarda `deleted: true`, `active: false` y `currentStock: 0`.
 - `stockMovements/{movementId}`: auditoría inmutable de entradas, ventas, ediciones, anulaciones (`sale_cancel`) y restauraciones (`sale_restore`).
 - `discounts/{discountId}`: descuentos fijos o porcentuales y datos de baja/restauración.
-- `sales/{saleId}`: cabecera, productos, descuento, totales y estado `active` o `cancelled`. Una anulación conserva `cancelledAt`, `cancelledBy` y `cancelledByName`; una restauración agrega `restoredAt`, `restoredBy` y `restoredByName`.
+- `sales/{saleId}`: cabecera, productos, descuento, totales, `paymentMethod`, `paymentMethodLabel` y estado `active` o `cancelled`. Los métodos válidos son `credit`, `debit`, `alias` y `cash`. Una anulación conserva `cancelledAt`, `cancelledBy` y `cancelledByName`; una restauración agrega `restoredAt`, `restoredBy` y `restoredByName`.
 - `counters/{PREFIX_YYYYMMDD}`: correlativo diario por ubicación.
 
 Las entidades recuperables usan `deleted`, `deletedAt`, `deletedBy`, `restoredAt` y `restoredBy`. Las ventas usan códigos `FM-{PREFIJO}-{AAAAMMDD}-{0001}`. Crear, editar o anular una venta actualiza stock y movimientos en una transacción atómica.

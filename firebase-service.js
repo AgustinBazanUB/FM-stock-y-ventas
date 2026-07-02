@@ -12,15 +12,6 @@ if (!config) throw new Error("Falta la configuración de Firebase");
 export const firebaseApp = initializeApp(config);
 export const auth = getAuth(firebaseApp);
 export const db = getFirestore(firebaseApp);
-let storageInstancePromise = null;
-
-// Storage queda disponible de forma diferida, sin descargar su SDK durante el uso normal.
-// La app actual usa imágenes locales para evitar requerir el plan Blaze.
-export function getOptionalStorage() {
-  storageInstancePromise ||= import("https://www.gstatic.com/firebasejs/11.10.0/firebase-storage.js")
-    .then(({getStorage}) => getStorage(firebaseApp));
-  return storageInstancePromise;
-}
 
 export const login = (email, password) => signInWithEmailAndPassword(auth, email, password);
 export const logout = () => signOut(auth);
@@ -271,11 +262,18 @@ function cleanDiscount(discount, subtotal) {
   return {discountId:discount.id || discount.discountId || "manual", name:discount.name || "Descuento manual", type:discount.type, value, amountApplied};
 }
 
-export async function createSale({location, seller, items, discount}) {
+const paymentLabels = {credit:"Pago Credito", debit:"Pago debito", alias:"Pago Alias", cash:"Pago eft"};
+function cleanPayment(paymentMethod, paymentMethodLabel) {
+  if (!Object.hasOwn(paymentLabels,paymentMethod)) throw new Error("Elegí una forma de pago antes de registrar la venta.");
+  return {paymentMethod,paymentMethodLabel:paymentMethodLabel===paymentLabels[paymentMethod]?paymentMethodLabel:paymentLabels[paymentMethod]};
+}
+
+export async function createSale({location, seller, items, discount, paymentMethod, paymentMethodLabel}) {
   const saleItems = cleanSaleItems(items);
   if (!saleItems.length) throw new Error("La venta está vacía");
   const subtotal = saleItems.reduce((sum, item) => sum + item.subtotal, 0);
   const saleDiscount = cleanDiscount(discount, subtotal);
+  const payment = cleanPayment(paymentMethod,paymentMethodLabel);
   const total = subtotal - (saleDiscount?.amountApplied || 0);
   if (total < 0) throw new Error("El total no puede ser negativo");
   const dateKey = localDateKey();
@@ -302,19 +300,20 @@ export async function createSale({location, seller, items, discount}) {
         previousStock, newStock, reason:`Venta ${saleCode}`, userId:seller.id, userName:seller.name, saleId:saleRef.id, createdAt:serverTimestamp()});
     });
     transaction.set(saleRef, {saleCode, locationId:location.id, locationName:location.name, locationPrefix:prefix,
-      sellerId:seller.id, sellerName:seller.name, items:saleItems, discount:saleDiscount, subtotal,
+      sellerId:seller.id, sellerName:seller.name, items:saleItems, discount:saleDiscount, ...payment, subtotal,
       totalItems:saleItems.reduce((sum,item) => sum + item.qty, 0), total, status:"active",
       createdAt:serverTimestamp(), updatedAt:serverTimestamp(), deletedAt:null});
-    return {id:saleRef.id, saleCode, total, createdAt:new Date()};
+    return {id:saleRef.id, saleCode, total, ...payment, createdAt:new Date()};
   });
 }
 
-export async function updateSaleTransaction({saleId, seller, items, discount}) {
+export async function updateSaleTransaction({saleId, seller, items, discount, paymentMethod, paymentMethodLabel}) {
   const saleRef = doc(db, "sales", saleId);
   const newItems = cleanSaleItems(items);
   if (!newItems.length) throw new Error("La venta está vacía");
   const subtotal = newItems.reduce((sum,item) => sum + item.subtotal, 0);
   const saleDiscount = cleanDiscount(discount, subtotal);
+  const payment = cleanPayment(paymentMethod,paymentMethodLabel);
   const total = subtotal - (saleDiscount?.amountApplied || 0);
   return runTransaction(db, async transaction => {
     const saleSnap = await transaction.get(saleRef);
@@ -340,8 +339,8 @@ export async function updateSaleTransaction({saleId, seller, items, discount}) {
       transaction.set(doc(collection(db, "stockMovements")), {locationId:sale.locationId, productId, type:"sale_edit", qty:difference,
         previousStock, newStock, reason:`Edición ${sale.saleCode}`, userId:seller.id, userName:seller.name, saleId, createdAt:serverTimestamp()});
     });
-    transaction.update(saleRef, {items:newItems, discount:saleDiscount, subtotal, totalItems:newItems.reduce((sum,item) => sum + item.qty,0), total, updatedAt:serverTimestamp()});
-    return {id:saleId, saleCode:sale.saleCode, total, createdAt:new Date()};
+    transaction.update(saleRef, {items:newItems, discount:saleDiscount, ...payment, subtotal, totalItems:newItems.reduce((sum,item) => sum + item.qty,0), total, updatedAt:serverTimestamp()});
+    return {id:saleId, saleCode:sale.saleCode, total, ...payment, createdAt:new Date()};
   });
 }
 

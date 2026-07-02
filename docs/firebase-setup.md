@@ -23,15 +23,9 @@ firebase deploy --only firestore
 
 El deploy publica `firestore.rules` e `firestore.indexes.json`.
 
-## Imágenes y Storage
+## Imágenes sin Storage
 
-La configuración de Storage y `storage.rules` están incluidas por compatibilidad futura. Si el proyecto tiene Storage habilitado, sus reglas se publican con:
-
-```bash
-firebase deploy --only storage
-```
-
-La versión actual no necesita ese servicio ni el plan Blaze: las imágenes de productos se sirven como archivos estáticos desde `assets/products/`. Para agregar una, guardá una versión WebP/JPG y una miniatura, y agregá ambas rutas a `assets/products/catalog.json`.
+La versión actual no usa Firebase Storage ni necesita el plan Blaze: las imágenes de productos se sirven como archivos estáticos desde `assets/products/`. Para agregar una, guardá una versión WebP/JPG y una miniatura, y agregá ambas rutas a `assets/products/catalog.json`.
 
 La web se hospeda en Netlify, no en Firebase Hosting.
 
