@@ -1,0 +1,83 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function isAdmin() { return signedIn() && profile().active == true && profile().role == "admin"; }
+    function isSeller() { return signedIn() && profile().active == true && profile().role == "seller"; }
+    function allowedLocation(locationId) { return isSeller() && locationId in profile().allowedLocationIds; }
+    function activeAllowedLocation(locationId) {
+      let location = get(/databases/$(database)/documents/locations/$(locationId)).data;
+      return allowedLocation(locationId) && location.active == true && location.deleted != true;
+    }
+
+    match /users/{uid} {
+      allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow list, create, update, delete: if isAdmin();
+    }
+
+    match /locations/{locationId} {
+      allow get: if isAdmin() || allowedLocation(locationId);
+      allow list, create, update, delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      allow read: if isAdmin() || (isSeller() && resource.data.active == true);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /discounts/{discountId} {
+      allow read: if isAdmin() || (isSeller() && resource.data.active == true);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /locationStock/{locationId} {
+      allow read, write: if isAdmin();
+      match /items/{productId} {
+        allow read: if isAdmin() || allowedLocation(locationId);
+        allow create, delete: if isAdmin();
+        allow update: if isAdmin() || (activeAllowedLocation(locationId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["currentStock", "updatedAt"])
+          && request.resource.data.currentStock >= 0);
+      }
+    }
+
+    match /sales/{saleId} {
+      allow read: if isAdmin() || (isSeller() && resource.data.sellerId == request.auth.uid);
+      allow create: if isAdmin() || (isSeller()
+        && request.resource.data.sellerId == request.auth.uid
+        && activeAllowedLocation(request.resource.data.locationId)
+        && request.resource.data.status == "active"
+        && request.resource.data.total >= 0);
+      allow update: if isAdmin() || (isSeller()
+        && resource.data.sellerId == request.auth.uid
+        && request.resource.data.sellerId == resource.data.sellerId
+        && request.resource.data.locationId == resource.data.locationId
+        && activeAllowedLocation(resource.data.locationId)
+        && resource.data.status == "active"
+        && request.resource.data.status in ["active", "cancelled"]
+        && request.resource.data.total >= 0);
+      allow delete: if false;
+    }
+
+    match /stockMovements/{movementId} {
+      allow read, update, delete: if isAdmin();
+      allow create: if isAdmin() || (isSeller()
+        && request.resource.data.userId == request.auth.uid
+        && allowedLocation(request.resource.data.locationId));
+    }
+
+    match /counters/{counterId} {
+      allow get: if isAdmin() || isSeller();
+      allow list: if isAdmin();
+      allow create: if isAdmin() || (isSeller() && allowedLocation(request.resource.data.locationId) && request.resource.data.lastNumber == 1);
+      allow update: if isAdmin() || (isSeller()
+        && request.resource.data.locationId == resource.data.locationId
+        && allowedLocation(resource.data.locationId)
+        && request.resource.data.lastNumber == resource.data.lastNumber + 1);
+      allow delete: if false;
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}

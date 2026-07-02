@@ -1,0 +1,13 @@
+{
+  "name": "Flor Mia · Stock y Ventas",
+  "short_name": "Flor Mia",
+  "description": "Punto de venta y control de stock de Flor Mia",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#315b43",
+  "lang": "es-AR",
+  "icons": [
+    {"src":"/assets/icons/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}

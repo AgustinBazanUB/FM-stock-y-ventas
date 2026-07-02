@@ -1,0 +1,279 @@
+import {
+  listUsers, listProducts, listLocations, listDiscounts, listLocationStock, saveLocation, saveProduct, saveDiscount,
+  saveUser, createSellerAccount, syncSellerAssignments, configureStock, addStock, subscribeLocationStock,
+  subscribeLocationSales, deleteSaleTransaction, restoreSaleTransaction, listSellerSales, reauthenticateAdmin, deleteLocationLogical,
+  restoreLocation, deleteProductLogical, restoreProduct, deleteDiscountLogical, restoreDiscount,
+  deleteLocationStock, deleteSellerLogical
+} from "./firebase-service.js";
+import {$, $$, escapeHtml, money, dateTime, dateOnly, timeOnly, toast, openModal, confirmDialog, setBusy, formDataObject, imageOrPlaceholder, downloadCsv} from "./utils.js";
+import {recordNextKey} from "./keyboard.js";
+import {listProductImages} from "./image-catalog.js";
+
+let state = null;
+
+export function destroyAdmin() {
+  state?.unsubStock?.(); state?.unsubSales?.();
+  state = null;
+}
+
+export async function renderAdmin(root, profile, onLogout) {
+  if (state?.profile?.id === profile.id) return;
+  destroyAdmin();
+  state = {root, profile, onLogout, section:"summary", users:[], products:[], productImages:[], locations:[], discounts:[], stock:[], sales:[], selectedLocationId:"", salesLimit:200, unsubStock:null, unsubSales:null};
+  root.innerHTML = shell(profile);
+  $("#admin-logout", root).addEventListener("click", onLogout);
+  $$("[data-section]", root).forEach(button => button.addEventListener("click", () => switchSection(button.dataset.section)));
+  try {
+    [state.users, state.products, state.locations, state.discounts, state.productImages] = await Promise.all([listUsers(), listProducts(), listLocations(), listDiscounts(), listProductImages()]);
+    state.selectedLocationId = activeLocations()[0]?.id || "";
+    renderLocationSelector();
+    subscribeSelected();
+    renderSection();
+  } catch (error) {
+    toast(`No se pudieron cargar los datos: ${error.message}`, "error");
+    $("#admin-content", root).innerHTML = `<div class="empty">No se pudieron cargar los datos. Revisá internet y las reglas de Firebase.</div>`;
+  }
+}
+
+function shell(profile) {
+  return `<header class="app-header"><div class="logo">Flor Mia</div><select id="admin-location" aria-label="Ubicación activa"><option>Cargando…</option></select><div class="header-spacer"></div><div class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</div><div class="user-chip"><strong>${escapeHtml(profile.name)}</strong>Administrador</div><button id="admin-logout" class="btn btn-ghost btn-small">Salir</button></header>
+  <div class="admin-layout"><nav class="side-nav" aria-label="Administración">
+    <button data-section="summary" class="active">Resumen</button><button data-section="locations">Ubicaciones</button><button data-section="deletedLocations">Ubicaciones eliminadas</button><button data-section="products">Productos</button><button data-section="deletedProducts">Productos eliminados</button><button data-section="stock">Stock</button><button data-section="sellers">Vendedores</button><button data-section="discounts">Descuentos</button><button data-section="deletedDiscounts">Descuentos eliminados</button><button data-section="sales">Ventas</button><button data-section="cancelledSales">Ventas anuladas</button><button data-section="exports">Exportar</button><button data-section="help">Ayuda</button>
+  </nav><main id="admin-content" class="page"><div class="empty">Cargando información…</div></main></div>`;
+}
+
+function renderLocationSelector() {
+  const select = $("#admin-location", state.root);
+  const locations=activeLocations();
+  select.innerHTML = locations.length ? locations.map(location => `<option value="${location.id}" ${location.id === state.selectedLocationId ? "selected" : ""}>${escapeHtml(location.name)}</option>`).join("") : `<option value="">Sin ubicaciones</option>`;
+  select.onchange = () => { state.selectedLocationId = select.value; state.salesLimit=200; subscribeSelected(); renderSection(); };
+}
+
+function subscribeSelected() {
+  state.unsubStock?.(); state.unsubSales?.(); state.stock = []; state.sales = [];
+  if (!state.selectedLocationId) return;
+  state.unsubStock = subscribeLocationStock(state.selectedLocationId, stock => { state.stock = stock.filter(item=>item.deleted!==true); renderSection(); }, error => toast(`Stock: ${error.message}`, "error"));
+  state.unsubSales = subscribeLocationSales(state.selectedLocationId, sales => { state.sales = sales; renderSection(); }, error => toast(`Ventas: ${error.message}`, "error"), state.salesLimit);
+}
+
+function switchSection(section) {
+  state.section = section;
+  $$("[data-section]", state.root).forEach(button => button.classList.toggle("active", button.dataset.section === section));
+  renderSection();
+}
+
+function renderSection() {
+  if (!state) return;
+  const renderers = {summary:renderSummary, locations:renderLocations, deletedLocations:renderDeletedLocations, products:renderProducts, deletedProducts:renderDeletedProducts, stock:renderStock, sellers:renderSellers, discounts:renderDiscounts, deletedDiscounts:renderDeletedDiscounts, sales:renderSales, cancelledSales:renderCancelledSales, exports:renderExports, help:renderHelp};
+  renderers[state.section]?.();
+}
+
+const activeLocations=()=>state.locations.filter(item=>item.active===true&&item.deleted!==true);
+const deletedLocations=()=>state.locations.filter(item=>item.deleted===true);
+const activeProducts=()=>state.products.filter(item=>item.active===true&&item.deleted!==true);
+const deletedProducts=()=>state.products.filter(item=>item.deleted===true);
+const activeDiscounts=()=>state.discounts.filter(item=>item.active===true&&item.deleted!==true);
+const deletedDiscounts=()=>state.discounts.filter(item=>item.deleted===true);
+const activeSellers=()=>state.users.filter(item=>item.role==="seller"&&item.active===true&&item.deleted!==true);
+
+function ensureSelectedLocation(){const active=activeLocations();if(!active.some(item=>item.id===state.selectedLocationId))state.selectedLocationId=active[0]?.id||"";renderLocationSelector();subscribeSelected();}
+
+function renderHelp() {
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Guía rápida</h1></div><div class="cards help-cards"><section class="card"><h3>Preparación</h3><ol class="help-steps"><li>Creá una ubicación.</li><li>Cargá productos con precios enteros.</li><li>Elegí su imagen del catálogo.</li><li>Agregalos al stock de la ubicación.</li><li>Creá vendedores y asignales ubicaciones.</li></ol></section><section class="card"><h3>Uso diario</h3><ol class="help-steps"><li>Ingresá mercadería desde Stock.</li><li>El vendedor registra cada venta.</li><li>Revisá alertas y ventas en Resumen.</li><li>Descargá respaldos desde Exportar.</li></ol></section><section class="card"><h3>Imágenes</h3><p>Las imágenes están incluidas en la carpeta de la web y aparecen como opciones al editar un producto. Firestore guarda únicamente la ruta seleccionada.</p></section><section class="card"><h3>Correcciones</h3><p>Las ventas se pueden editar o anular. Al anularlas, el stock vuelve automáticamente. Los precios y descuentos siempre se guardan sin decimales.</p></section><section class="card"><h3>Eliminar y recuperar</h3><p>Productos, ubicaciones y descuentos pasan a su lista de eliminados y pueden restaurarse. Eliminar stock lo deja en cero. Los vendedores eliminados pierden el acceso, pero sus ventas se conservan.</p></section></div>`;
+}
+
+function alertHtml() {
+  const location = currentLocation();
+  const red = state.stock.filter(item => item.active && Number(item.currentStock) <= Number(item.redAlertQty));
+  const yellow = state.stock.filter(item => item.active && Number(item.currentStock) <= Number(item.yellowAlertQty) && Number(item.currentStock) > Number(item.redAlertQty));
+  const row = (items, type, title) => items.length ? `<section class="alert-row ${type}"><strong>${title}</strong>${items.map(item => `<article class="stock-alert"><img class="thumb" loading="lazy" src="${imageOrPlaceholder(item.thumbUrl,item.abbreviation)}" alt=""><div><strong>${escapeHtml(item.abbreviation)}</strong><small>${escapeHtml(item.productName)}</small><small>Stock: ${item.currentStock} · ${escapeHtml(location?.name || "")}</small></div></article>`).join("")}</section>` : "";
+  return `<div class="alerts">${row(red,"red","Rojo")}${row(yellow,"yellow","Amarillo")}</div>`;
+}
+
+function currentLocation() { return state.locations.find(location => location.id === state.selectedLocationId); }
+
+function metrics() {
+  const active = state.sales.filter(sale => sale.status === "active");
+  const total = active.reduce((sum,sale) => sum + Number(sale.total || 0),0);
+  const items = active.reduce((sum,sale) => sum + Number(sale.totalItems || 0),0);
+  const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+  const today = active.filter(sale => sale.createdAt?.toDate?.() >= todayStart);
+  const todayTotal = today.reduce((sum,sale) => sum + Number(sale.total || 0),0);
+  const products = new Map(); const sellers = new Map(); const hours = new Map();
+  active.forEach(sale => {
+    sale.items?.forEach(item => products.set(item.name, (products.get(item.name)||0) + Number(item.qty)));
+    sellers.set(sale.sellerName, (sellers.get(sale.sellerName)||0) + Number(sale.total||0));
+    const date = sale.createdAt?.toDate?.(); const hour = date ? `${String(date.getHours()).padStart(2,"0")}:00` : "Pendiente";
+    hours.set(hour,(hours.get(hour)||0)+Number(sale.total||0));
+  });
+  const sorted = map => [...map].sort((a,b) => b[1]-a[1]);
+  return {active,total,items,ticket:active.length ? total/active.length : 0,todayTotal,todayCount:today.length, products:sorted(products), sellers:sorted(sellers), hours:[...hours].sort()};
+}
+
+function renderSummary() {
+  const content = $("#admin-content", state.root); const m = metrics();
+  content.innerHTML = `<div class="page-head"><h1>Resumen · ${escapeHtml(currentLocation()?.name || "Sin ubicación")}</h1></div>${alertHtml()}
+  <div class="cards"><div class="card metric"><strong>${money(m.todayTotal)}</strong><span>Total de hoy (${m.todayCount} ventas)</span></div><div class="card metric"><strong>${money(m.total)}</strong><span>Total de la ubicación/evento</span></div><div class="card metric"><strong>${m.active.length}</strong><span>Ventas</span></div><div class="card metric"><strong>${m.items}</strong><span>Productos vendidos</span></div><div class="card metric"><strong>${money(m.ticket)}</strong><span>Ticket promedio</span></div></div>
+  <div class="cards" style="margin-top:13px"><section class="card"><h3>Productos más vendidos</h3>${rankList(m.products, value => `${value} u.`)}</section><section class="card"><h3>Ventas por vendedor</h3>${rankList(m.sellers, money)}</section><section class="card"><h3>Ventas por hora</h3>${rankList(m.hours, money)}</section><section class="card"><h3>Stock restante</h3>${rankList(state.stock.map(item => [item.abbreviation || item.productName,Number(item.currentStock)]).sort((a,b)=>a[1]-b[1]), value => `${value} u.`)}</section></div>`;
+}
+
+function rankList(rows, formatter) {
+  return rows.length ? `<ol class="rank-list">${rows.slice(0,10).map(([name,value]) => `<li><span>${escapeHtml(name || "Sin nombre")}</span><strong>${formatter(value)}</strong></li>`).join("")}</ol>` : `<div class="empty">Todavía no hay datos</div>`;
+}
+
+function renderLocations() {
+  const sellers = activeSellers();
+  const locations = activeLocations();
+  $("#admin-content", state.root).innerHTML = `<div class="page-head"><h1>Ubicaciones y eventos</h1><div class="actions"><button class="btn btn-primary" id="new-location">+ Nueva ubicación</button></div></div>
+  <div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Código</th><th>Fechas</th><th>Vendedores</th><th>Estado</th><th></th></tr></thead><tbody>${locations.map(location => `<tr><td data-label="Nombre">${escapeHtml(location.name)}</td><td data-label="Código">${escapeHtml(location.codePrefix)}</td><td data-label="Fechas">${escapeHtml(location.startDate||"—")} – ${escapeHtml(location.endDate||"—")}</td><td data-label="Vendedores">${(location.assignedSellerIds||[]).map(id=>escapeHtml(sellers.find(s=>s.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado"><span class="badge ok">Activa</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-location="${location.id}">Editar</button><button class="btn btn-ghost btn-small" data-sales-location="${location.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-location="${location.id}">Eliminar ubicación</button></div></td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">Creá la primera ubicación para empezar</div></td></tr>`}</tbody></table></div>`;
+  $("#new-location").onclick = () => locationForm();
+  $$('[data-edit-location]').forEach(button => button.onclick = () => locationForm(state.locations.find(item => item.id === button.dataset.editLocation)));
+  $$('[data-sales-location]').forEach(button => button.onclick = () => { state.selectedLocationId=button.dataset.salesLocation; state.salesLimit=200; renderLocationSelector(); subscribeSelected(); switchSection("sales"); });
+  $$('[data-delete-location]').forEach(button=>button.onclick=()=>deleteLocationForm(locations.find(item=>item.id===button.dataset.deleteLocation)));
+}
+
+function deleteLocationForm(location){
+  const modal=openModal({title:"Eliminar ubicación",content:`<p>Para eliminar <strong>${escapeHtml(location.name)}</strong>, confirmá tus credenciales. Sus ventas y stock se conservarán.</p><form id="delete-location-form"><label>Email del administrador<input name="email" type="email" autocomplete="username" required></label><label>Contraseña<input name="password" type="password" autocomplete="current-password" required></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button type="submit" class="btn btn-danger">Eliminar ubicación</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;
+  $("#delete-location-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;const data=formDataObject(event.currentTarget);setBusy(button,true,"Verificando…");try{await reauthenticateAdmin(data.email,data.password);setBusy(button,true,"Eliminando…");await deleteLocationLogical(location.id,state.profile);state.locations=await listLocations();ensureSelectedLocation();modal.close();renderLocations();toast("Ubicación eliminada","success");}catch(error){const authMessage=error.code?.startsWith?.("auth/")?"Email o contraseña incorrectos":error.message;toast(authMessage,"error");setBusy(button,false);}};
+}
+
+function renderDeletedLocations(){const rows=deletedLocations();$("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Ubicaciones eliminadas</h1></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Código</th><th>Fechas</th><th>Eliminada</th><th></th></tr></thead><tbody>${rows.map(item=>`<tr><td data-label="Nombre">${escapeHtml(item.name)}</td><td data-label="Código">${escapeHtml(item.codePrefix)}</td><td data-label="Fechas">${escapeHtml(item.startDate||"—")} – ${escapeHtml(item.endDate||"—")}</td><td data-label="Eliminada">${dateTime(item.deletedAt)}</td><td data-label="Acciones"><button class="btn btn-primary btn-small" data-restore-location="${item.id}">Restaurar</button></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay ubicaciones eliminadas</div></td></tr>`}</tbody></table></div>`;$$('[data-restore-location]').forEach(button=>button.onclick=async()=>{const item=rows.find(row=>row.id===button.dataset.restoreLocation);if(!await confirmDialog(`¿Restaurar ${item.name}?`))return;setBusy(button,true,"Restaurando…");try{await restoreLocation(item.id,state.profile);state.locations=await listLocations();ensureSelectedLocation();renderDeletedLocations();toast("Ubicación restaurada","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});}
+
+function locationForm(location = {}) {
+  const sellers = activeSellers();
+  const modal = openModal({title:location.id ? "Editar ubicación" : "Nueva ubicación", content:`<form id="location-form"><div class="form-grid"><label>Nombre<input name="name" required value="${escapeHtml(location.name||"")}"></label><label>Código corto<input name="codePrefix" required maxlength="8" value="${escapeHtml(location.codePrefix||"")}" placeholder="FCOL"></label><label>Fecha de inicio<input name="startDate" type="date" value="${escapeHtml(location.startDate||"")}"></label><label>Fecha de fin<input name="endDate" type="date" value="${escapeHtml(location.endDate||"")}"></label><label class="span-2">Vendedores asignados<div class="check-list">${sellers.map(seller=>`<label><input type="checkbox" name="seller" value="${seller.id}" ${(location.assignedSellerIds||[]).includes(seller.id)?"checked":""}> ${escapeHtml(seller.name)}</label>`).join("")||"No hay vendedores creados"}</div></label><label class="span-2"><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${location.active!==false?"checked":""}> Ubicación activa</span></label></div><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;
+  $("#location-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{
+    const data=formDataObject(event.currentTarget); if(data.startDate&&data.endDate&&data.endDate<data.startDate)throw new Error("La fecha final no puede ser anterior a la inicial");
+    const assignedSellerIds=$$('input[name=seller]:checked',event.currentTarget).map(input=>input.value);
+    const id=await saveLocation(location.id,{name:data.name.trim(),codePrefix:data.codePrefix.trim().toUpperCase(),startDate:data.startDate||"",endDate:data.endDate||"",active:Boolean(data.active),assignedSellerIds});
+    for(const seller of sellers){const ids=new Set(seller.allowedLocationIds||[]);assignedSellerIds.includes(seller.id)?ids.add(id):ids.delete(id);await saveUser(seller.id,{allowedLocationIds:[...ids]});seller.allowedLocationIds=[...ids];}
+    state.locations=await listLocations();state.selectedLocationId ||= id;renderLocationSelector();subscribeSelected();modal.close();renderLocations();toast("Ubicación guardada","success");
+  }catch(error){toast(error.message,"error");setBusy(button,false);}};
+}
+
+function renderProducts() {
+  const products=activeProducts();
+  $("#admin-content", state.root).innerHTML=`<div class="page-head"><div><h1>Productos</h1><p class="muted">Precios enteros. Elegí una imagen del catálogo local.</p></div><div class="actions"><button class="btn btn-primary" id="new-product">+ Nuevo producto</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th></th><th>Producto</th><th>Abrev.</th><th>Precio</th><th>Botonera</th><th>Estado</th><th></th></tr></thead><tbody>${products.map(product=>`<tr><td data-label="Imagen"><img class="thumb" loading="lazy" src="${imageOrPlaceholder(product.thumbUrl,product.abbreviation)}" alt=""></td><td data-label="Producto">${escapeHtml(product.name)}</td><td data-label="Abrev.">${escapeHtml(product.abbreviation)}</td><td data-label="Precio">${money(product.defaultPrice)}</td><td data-label="Botonera">${escapeHtml(product.buttonLabel||"—")}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-product="${product.id}">Editar</button><button class="btn btn-danger btn-small" data-delete-product="${product.id}">Eliminar producto</button></div></td></tr>`).join("")||`<tr><td colspan="7"><div class="empty">No hay productos activos</div></td></tr>`}</tbody></table></div>`;
+  $("#new-product").onclick=()=>productForm();
+  $$('[data-edit-product]').forEach(button=>button.onclick=()=>productForm(products.find(item=>item.id===button.dataset.editProduct)));
+  $$('[data-delete-product]').forEach(button=>button.onclick=async()=>{const product=products.find(item=>item.id===button.dataset.deleteProduct);if(!await confirmDialog("¿Querés eliminar este producto?"))return;setBusy(button,true,"Eliminando…");try{await deleteProductLogical(product.id,state.profile);state.products=await listProducts();renderProducts();toast("Producto eliminado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
+}
+
+function renderDeletedProducts(){const products=deletedProducts();$("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Productos eliminados</h1></div><div class="table-wrap"><table class="responsive"><thead><tr><th></th><th>Producto</th><th>Abrev.</th><th>Precio</th><th>Eliminado</th><th></th></tr></thead><tbody>${products.map(item=>`<tr><td data-label="Imagen"><img class="thumb" loading="lazy" src="${imageOrPlaceholder(item.thumbUrl,item.abbreviation)}" alt=""></td><td data-label="Producto">${escapeHtml(item.name)}</td><td data-label="Abrev.">${escapeHtml(item.abbreviation)}</td><td data-label="Precio">${money(item.defaultPrice)}</td><td data-label="Eliminado">${dateTime(item.deletedAt)}</td><td data-label="Acciones"><button class="btn btn-primary btn-small" data-restore-product="${item.id}">Restaurar producto</button></td></tr>`).join("")||`<tr><td colspan="6"><div class="empty">No hay productos eliminados</div></td></tr>`}</tbody></table></div>`;$$('[data-restore-product]').forEach(button=>button.onclick=async()=>{const item=products.find(row=>row.id===button.dataset.restoreProduct);if(!await confirmDialog(`¿Restaurar ${item.name}?`))return;setBusy(button,true,"Restaurando…");try{await restoreProduct(item.id,state.profile);state.products=await listProducts();renderDeletedProducts();toast("Producto restaurado. Volvé a agregarlo al stock de cada ubicación.","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});}
+
+function productForm(product={}) {
+  let recorded={buttonKey:product.buttonKey||"",buttonCode:product.buttonCode||"",buttonLocation:product.buttonLocation??0,buttonLabel:product.buttonLabel||""};
+  let stopRecording=null;
+  const currentCatalogImage=state.productImages.find(item=>item.imageUrl===product.imageUrl);
+  const legacyImage=product.imageUrl&&!currentCatalogImage?`<label class="image-choice"><input type="radio" name="imageId" value="__current" checked><span class="image-choice-card"><img src="${escapeHtml(product.thumbUrl||product.imageUrl)}" alt=""><small>Imagen actual</small></span></label>`:"";
+  const catalogChoices=state.productImages.map(item=>`<label class="image-choice"><input type="radio" name="imageId" value="${escapeHtml(item.id)}" ${currentCatalogImage?.id===item.id?"checked":""}><span class="image-choice-card"><img src="${escapeHtml(item.thumbUrl)}" alt=""><small>${escapeHtml(item.name)}</small></span></label>`).join("");
+  const modal=openModal({title:product.id?"Editar producto":"Nuevo producto",onClose:()=>stopRecording?.(),content:`<form id="product-form"><div class="form-grid"><label>Nombre<input name="name" required value="${escapeHtml(product.name||"")}"></label><label>Abreviación<input name="abbreviation" required maxlength="8" value="${escapeHtml(product.abbreviation||"")}"></label><label class="span-2">Descripción<textarea name="description">${escapeHtml(product.description||"")}</textarea></label><label>Precio por defecto<input name="defaultPrice" type="number" min="0" step="1" inputmode="numeric" required value="${Math.round(Number(product.defaultPrice||0))}"><span class="form-hint">Sólo números enteros, sin coma ni decimales.</span></label><fieldset class="span-2 image-picker-field"><legend>Imagen del catálogo</legend><div class="image-picker"><label class="image-choice"><input type="radio" name="imageId" value="" ${!product.imageUrl?"checked":""}><span class="image-choice-card no-image"><strong>FM</strong><small>Sin imagen</small></span></label>${legacyImage}${catalogChoices}</div><p class="form-hint">Las imágenes están guardadas dentro de la web; Firestore sólo conserva la ruta elegida.</p></fieldset><div class="span-2 card"><strong>Botonera</strong><p id="recorded-key" class="muted">${recorded.buttonLabel?`Tecla guardada: ${escapeHtml(recorded.buttonLabel)}`:"Sin tecla asignada"}</p><button type="button" class="btn btn-secondary" id="record-key">Grabar tecla</button> <button type="button" class="btn btn-ghost" id="clear-key">Quitar tecla</button></div><label class="span-2"><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${product.active!==false?"checked":""}> Producto activo</span></label></div><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button type="submit" class="btn btn-primary">Guardar</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;
+  const imageHint=$(".image-picker-field .form-hint",modal.root);if(imageHint)imageHint.textContent="Imágenes locales recomendadas: WebP o JPG, vertical/cuadrada, hasta 1080×1920 y preferentemente menos de 500 KB. Firestore sólo guarda la ruta.";
+  $("#clear-key",modal.root).onclick=()=>{recorded={buttonKey:"",buttonCode:"",buttonLocation:0,buttonLabel:""};$("#recorded-key",modal.root).textContent="Sin tecla asignada";};
+  $("#record-key",modal.root).onclick=event=>{const button=event.currentTarget;button.disabled=true;button.textContent="Esperando una tecla…";$("#recorded-key",modal.root).textContent="Presioná la tecla de la botonera que querés asignar a este producto";stopRecording=recordNextKey({onRecorded:key=>{stopRecording=null;recorded=key;button.disabled=false;button.textContent="Grabar tecla";$("#recorded-key",modal.root).textContent=`Tecla guardada: ${key.buttonLabel}`;},onCancel:()=>{stopRecording=null;button.disabled=false;button.textContent="Grabar tecla";const label=$("#recorded-key",modal.root);if(label)label.textContent=recorded.buttonLabel?`Tecla guardada: ${recorded.buttonLabel}`:"Sin tecla asignada";}});};
+  $("#product-form",modal.root).onsubmit=async event=>{
+    event.preventDefault();
+    const form=event.currentTarget;
+    const button=event.submitter||$('button[type="submit"]',form);
+    const data=formDataObject(form);
+    setBusy(button,true);
+    try{
+      const abbreviation=data.abbreviation.trim().toUpperCase();
+      if(abbreviation.length>8)throw new Error("La abreviación admite hasta 8 caracteres");
+      if(!Number.isInteger(Number(data.defaultPrice)))throw new Error("El precio debe ser un número entero");
+      const selectedImage=data.imageId==="__current"?{imageUrl:product.imageUrl||"",thumbUrl:product.thumbUrl||""}:state.productImages.find(item=>item.id===data.imageId);
+      await saveProduct(product.id,{name:data.name.trim(),abbreviation,description:data.description.trim(),defaultPrice:Number(data.defaultPrice),active:Boolean(data.active),...recorded,imageUrl:selectedImage?.imageUrl||"",thumbUrl:selectedImage?.thumbUrl||""});
+      state.products=await listProducts();modal.close();renderProducts();toast("Producto guardado","success");
+    }catch(error){toast(error.message,"error");setBusy(button,false);}
+  };
+}
+
+function renderStock() {
+  const configured=new Map(state.stock.map(item=>[item.id,item]));
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Stock · ${escapeHtml(currentLocation()?.name||"Sin ubicación")}</h1><div class="actions"><button class="btn btn-primary" id="configure-product" ${currentLocation()?"":"disabled"}>+ Agregar/configurar producto</button></div></div>${alertHtml()}<div class="table-wrap"><table class="responsive"><thead><tr><th>Producto</th><th>Precio</th><th>Inicial</th><th>Actual</th><th>Alertas</th><th>Tecla</th><th>Estado</th><th></th></tr></thead><tbody>${state.stock.map(item=>`<tr><td data-label="Producto">${escapeHtml(item.productName)}</td><td data-label="Precio">${money(item.price)}</td><td data-label="Inicial">${item.initialStock}</td><td data-label="Actual"><strong>${item.currentStock}</strong></td><td data-label="Alertas"><span class="badge warning">${item.yellowAlertQty}</span> <span class="badge danger">${item.redAlertQty}</span></td><td data-label="Tecla">${escapeHtml(item.buttonLabel||"—")}</td><td data-label="Estado"><span class="badge ${item.active?"ok":""}">${item.active?"Activo":"Inactivo"}</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-config-stock="${item.id}">Configurar</button><button class="btn btn-primary btn-small" data-add-stock="${item.id}">Mercadería</button><button class="btn btn-danger btn-small" data-delete-stock="${item.id}">Eliminar stock</button></div></td></tr>`).join("")||`<tr><td colspan="8"><div class="empty">Agregá productos a esta ubicación</div></td></tr>`}</tbody></table></div>`;
+  $("#configure-product").onclick=()=>stockForm();$$('[data-config-stock]').forEach(button=>button.onclick=()=>stockForm(configured.get(button.dataset.configStock)));$$('[data-add-stock]').forEach(button=>button.onclick=()=>stockAddForm(configured.get(button.dataset.addStock)));$$('[data-delete-stock]').forEach(button=>button.onclick=async()=>{const item=configured.get(button.dataset.deleteStock);if(!await confirmDialog("¿Querés eliminar este stock? Si volvés a cargar este producto en la ubicación, empezará desde stock inicial 0."))return;setBusy(button,true,"Eliminando…");try{await deleteLocationStock({locationId:state.selectedLocationId,productId:item.id,user:state.profile});toast("Stock eliminado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
+}
+
+function stockForm(stockItem=null) {
+  if(!activeProducts().length)return toast("Primero creá un producto activo","error");
+  const product=stockItem?state.products.find(p=>p.id===stockItem.id):null;
+  const products=activeProducts();
+  const modal=openModal({title:stockItem?"Configurar stock":"Agregar producto a la ubicación",content:`<form id="stock-form"><label>Producto<select name="productId" ${stockItem?"disabled":""}>${products.map(p=>`<option value="${p.id}" ${p.id===product?.id?"selected":""}>${escapeHtml(p.name)}</option>`).join("")}</select></label><div class="form-grid"><label>Stock inicial<input name="initialStock" type="number" min="0" step="1" ${stockItem?"disabled":""} value="${Number(stockItem?.initialStock||0)}"></label><label>Precio en esta ubicación<input name="price" type="number" min="0" step="1" inputmode="numeric" required value="${Math.round(Number(stockItem?.price??product?.defaultPrice??0))}"></label><label>Alerta amarilla<input name="yellowAlertQty" type="number" min="0" step="1" required value="${Number(stockItem?.yellowAlertQty||0)}"></label><label>Alerta roja<input name="redAlertQty" type="number" min="0" step="1" required value="${Number(stockItem?.redAlertQty||0)}"></label><label class="span-2"><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${stockItem?.active!==false?"checked":""}> Disponible para vender</span></label></div><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;$("#stock-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{const data=formDataObject(event.currentTarget);const selected=stockItem?product:state.products.find(p=>p.id===data.productId);if(!selected)throw new Error("Elegí un producto");if(!stockItem&&state.stock.some(item=>item.id===selected.id))throw new Error("Ese producto ya está cargado");if(Number(data.yellowAlertQty)<Number(data.redAlertQty))throw new Error("La alerta amarilla debe ser mayor o igual a la roja");const candidateCode=selected.buttonCode,candidateKey=selected.buttonKey;if(Boolean(data.active)&&state.stock.some(item=>item.id!==selected.id&&item.active&&((candidateCode&&item.buttonCode===candidateCode)||(candidateKey&&item.buttonKey===candidateKey))))throw new Error("Esa tecla ya está asignada a otro producto activo en la ubicación");await configureStock({locationId:state.selectedLocationId,product:selected,values:{initialStock:Number(data.initialStock||stockItem?.initialStock||0),price:Number(data.price),yellowAlertQty:Number(data.yellowAlertQty),redAlertQty:Number(data.redAlertQty),active:Boolean(data.active),buttonKey:selected.buttonKey,buttonCode:selected.buttonCode,buttonLabel:selected.buttonLabel},user:state.profile});modal.close();toast("Stock configurado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}};
+}
+
+function stockAddForm(item) {
+  let qty=1;const modal=openModal({title:"Agregar mercadería",content:`<p><strong>${escapeHtml(item.productName)}</strong><br><span class="muted">Stock actual: ${item.currentStock}</span></p><form id="add-stock-form"><label>Cantidad<div class="qty-control"><button type="button" id="qty-minus">−</button><input id="stock-qty" name="qty" type="number" min="1" step="1" value="1"><button type="button" id="qty-plus">+</button></div></label><label>Motivo<input name="reason" value="Ingreso de mercadería"></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Confirmar</button></div></form>`});
+  const input=$("#stock-qty",modal.root);$("#qty-minus",modal.root).onclick=()=>input.value=Math.max(1,Number(input.value)-1);$("#qty-plus",modal.root).onclick=()=>input.value=Number(input.value)+1;$(".modal-cancel",modal.root).onclick=modal.close;$("#add-stock-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{const data=formDataObject(event.currentTarget);qty=Number(data.qty);if(qty<=0)throw new Error("Ingresá una cantidad mayor a cero");await addStock({locationId:state.selectedLocationId,productId:item.id,qty,reason:data.reason,user:state.profile});modal.close();toast("Mercadería agregada","success");}catch(error){toast(error.message,"error");setBusy(button,false);}};
+}
+
+function renderSellers() {
+  const sellers=activeSellers();
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Vendedores</h1><div class="actions"><button class="btn btn-primary" id="new-seller">+ Nuevo vendedor</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Email</th><th>Ubicaciones</th><th>Estado</th><th></th></tr></thead><tbody>${sellers.map(seller=>`<tr><td data-label="Nombre">${escapeHtml(seller.name)}</td><td data-label="Email">${escapeHtml(seller.email)}</td><td data-label="Ubicaciones">${(seller.allowedLocationIds||[]).map(id=>escapeHtml(activeLocations().find(l=>l.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-seller="${seller.id}">Editar</button><button class="btn btn-ghost btn-small" data-view-seller="${seller.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-seller="${seller.id}">Eliminar vendedor</button></div></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay vendedores activos</div></td></tr>`}</tbody></table></div>`;
+  $("#new-seller").onclick=()=>sellerForm();$$('[data-edit-seller]').forEach(button=>button.onclick=()=>sellerForm(sellers.find(item=>item.id===button.dataset.editSeller)));$$('[data-view-seller]').forEach(button=>button.onclick=()=>sellerSales(button.dataset.viewSeller));$$('[data-delete-seller]').forEach(button=>button.onclick=async()=>{const seller=sellers.find(item=>item.id===button.dataset.deleteSeller);if(!await confirmDialog("¿Querés eliminar este vendedor?"))return;setBusy(button,true,"Eliminando…");try{await deleteSellerLogical(seller.id,state.profile);[state.users,state.locations]=await Promise.all([listUsers(),listLocations()]);renderSellers();toast("Vendedor eliminado y accesos retirados","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
+}
+
+function sellerForm(seller={}) {
+  const locations=activeLocations();
+  const modal=openModal({title:seller.id?"Editar vendedor":"Nuevo vendedor",content:`<form id="seller-form"><label>Nombre<input name="name" required value="${escapeHtml(seller.name||"")}"></label><label>Email<input name="email" type="email" required value="${escapeHtml(seller.email||"")}" ${seller.id?"disabled":""}></label>${seller.id?"":`<label>Contraseña temporal<input name="password" type="password" minlength="6" required><span class="form-hint">El vendedor la usará para su primer ingreso.</span></label>`}<label>Ubicaciones<div class="check-list">${locations.map(location=>`<label><input type="checkbox" name="location" value="${location.id}" ${(seller.allowedLocationIds||[]).includes(location.id)?"checked":""}> ${escapeHtml(location.name)}</label>`).join("")||"Primero creá una ubicación"}</div></label><label><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${seller.active!==false?"checked":""}> Usuario activo</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;$("#seller-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{const data=formDataObject(event.currentTarget);const allowedLocationIds=$$('input[name=location]:checked',event.currentTarget).map(input=>input.value);let id=seller.id;if(id){await saveUser(id,{name:data.name.trim(),active:Boolean(data.active),allowedLocationIds});}else{id=await createSellerAccount({name:data.name.trim(),email:data.email.trim(),password:data.password,active:Boolean(data.active),allowedLocationIds});}await syncSellerAssignments(id,allowedLocationIds);[state.users,state.locations]=await Promise.all([listUsers(),listLocations()]);renderLocationSelector();modal.close();renderSellers();toast("Vendedor guardado","success");}catch(error){const message=error.code==="auth/email-already-in-use"?"Ese email ya está registrado":error.message;toast(message,"error");setBusy(button,false);}};
+}
+
+function sellerMetricsHtml(sales){const active=sales.filter(sale=>sale.status==="active");const total=active.reduce((sum,sale)=>sum+Number(sale.total||0),0);const items=active.reduce((sum,sale)=>sum+Number(sale.totalItems||0),0);return `<div class="cards"><div class="card metric"><strong>${money(total)}</strong><span>Total vendido</span></div><div class="card metric"><strong>${active.length}</strong><span>Ventas activas</span></div><div class="card metric"><strong>${items}</strong><span>Productos vendidos</span></div><div class="card metric"><strong>${money(active.length?total/active.length:0)}</strong><span>Ticket promedio</span></div></div>`;}
+
+async function sellerSales(sellerId){
+  const seller=state.users.find(u=>u.id===sellerId);
+  try{
+    const sales=await listSellerSales(sellerId,500);
+    const modal=openModal({title:`Ventas · ${seller.name}`,wide:true,content:`${sellerMetricsHtml(sales)}<div style="height:13px"></div>${salesTable(sales)}`});
+    $$('[data-sale-detail]',modal.root).forEach(button=>button.onclick=()=>saleDetail(sales.find(s=>s.id===button.dataset.saleDetail)));
+    $$('[data-delete-sale]',modal.root).forEach(button=>button.onclick=async()=>{
+      const sale=sales.find(s=>s.id===button.dataset.deleteSale);
+      if(!await confirmDialog("¿Querés anular esta venta? Se devolverán las unidades al stock."))return;
+      try{await deleteSaleTransaction({saleId:sale.id,user:state.profile});toast("Venta anulada y stock devuelto","success");await sellerSales(sellerId);}catch(error){toast(error.message,"error");}
+    });
+  }catch(error){toast(error.message,"error");}
+}
+
+function renderDiscounts() {
+  const discounts=activeDiscounts();
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Descuentos</h1><div class="actions"><button class="btn btn-primary" id="new-discount">+ Nuevo descuento</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Tipo</th><th>Valor</th><th>Estado</th><th></th></tr></thead><tbody>${discounts.map(item=>`<tr><td data-label="Nombre">${escapeHtml(item.name)}</td><td data-label="Tipo">${item.type==="percent"?"Porcentaje":"Monto fijo"}</td><td data-label="Valor">${item.type==="percent"?`${item.value}%`:money(item.value)}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-discount="${item.id}">Editar</button><button class="btn btn-danger btn-small" data-delete-discount="${item.id}">Eliminar descuento</button></div></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay descuentos activos</div></td></tr>`}</tbody></table></div>`;
+  $("#new-discount").onclick=()=>discountForm();$$('[data-edit-discount]').forEach(button=>button.onclick=()=>discountForm(discounts.find(item=>item.id===button.dataset.editDiscount)));$$('[data-delete-discount]').forEach(button=>button.onclick=async()=>{const item=discounts.find(row=>row.id===button.dataset.deleteDiscount);if(!await confirmDialog("¿Querés eliminar este descuento?"))return;setBusy(button,true,"Eliminando…");try{await deleteDiscountLogical(item.id,state.profile);state.discounts=await listDiscounts();renderDiscounts();toast("Descuento eliminado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
+}
+
+function renderDeletedDiscounts(){const discounts=deletedDiscounts();$("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Descuentos eliminados</h1></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Tipo</th><th>Valor</th><th>Eliminado</th><th></th></tr></thead><tbody>${discounts.map(item=>`<tr><td data-label="Nombre">${escapeHtml(item.name)}</td><td data-label="Tipo">${item.type==="percent"?"Porcentaje":"Monto fijo"}</td><td data-label="Valor">${item.type==="percent"?`${item.value}%`:money(item.value)}</td><td data-label="Eliminado">${dateTime(item.deletedAt)}</td><td data-label="Acciones"><button class="btn btn-primary btn-small" data-restore-discount="${item.id}">Restaurar descuento</button></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay descuentos eliminados</div></td></tr>`}</tbody></table></div>`;$$('[data-restore-discount]').forEach(button=>button.onclick=async()=>{const item=discounts.find(row=>row.id===button.dataset.restoreDiscount);if(!await confirmDialog(`¿Restaurar ${item.name}?`))return;setBusy(button,true,"Restaurando…");try{await restoreDiscount(item.id,state.profile);state.discounts=await listDiscounts();renderDeletedDiscounts();toast("Descuento restaurado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});}
+
+function discountForm(item={}){const modal=openModal({title:item.id?"Editar descuento":"Nuevo descuento",content:`<form id="discount-form"><label>Nombre<input name="name" required value="${escapeHtml(item.name||"")}"></label><label>Tipo<select name="type"><option value="fixed" ${item.type!=="percent"?"selected":""}>Monto fijo</option><option value="percent" ${item.type==="percent"?"selected":""}>Porcentaje</option></select></label><label>Valor entero<input name="value" type="number" min="0" step="1" inputmode="numeric" required value="${Math.round(Number(item.value||0))}"></label><label><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${item.active!==false?"checked":""}> Descuento activo</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});$(".modal-cancel",modal.root).onclick=modal.close;$("#discount-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{const data=formDataObject(event.currentTarget);if(!Number.isInteger(Number(data.value)))throw new Error("El descuento debe ser un número entero");if(data.type==="percent"&&Number(data.value)>100)throw new Error("El porcentaje no puede superar 100");await saveDiscount(item.id,{name:data.name.trim(),type:data.type,value:Number(data.value),active:Boolean(data.active)});state.discounts=await listDiscounts();modal.close();renderDiscounts();toast("Descuento guardado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}};}
+
+function salesTable(sales) {return `<div class="table-wrap"><table class="responsive"><thead><tr><th>Código</th><th>Fecha</th><th>Vendedor</th><th>Productos</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>${sales.map(sale=>`<tr><td data-label="Código">${escapeHtml(sale.saleCode)}</td><td data-label="Fecha">${dateTime(sale.createdAt)}</td><td data-label="Vendedor">${escapeHtml(sale.sellerName)}</td><td data-label="Productos">${sale.totalItems}</td><td data-label="Total"><strong>${money(sale.total)}</strong></td><td data-label="Estado"><span class="badge ${sale.status==="active"?"ok":"danger"}">${sale.status==="active"?"Activa":"Anulada"}</span></td><td data-label="Acciones"><button class="btn btn-ghost btn-small" data-sale-detail="${sale.id}">Ver</button>${sale.status==="active"?`<button class="btn btn-danger btn-small" data-delete-sale="${sale.id}">Anular</button>`:""}</td></tr>`).join("")||`<tr><td colspan="7"><div class="empty">No hay ventas</div></td></tr>`}</tbody></table></div>`;}
+
+function renderSales(){
+  const activeSales=state.sales.filter(sale=>sale.status==="active");
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Ventas · ${escapeHtml(currentLocation()?.name||"Sin ubicación")}</h1><div class="actions"><span class="badge info">Tiempo real</span></div></div>${salesTable(activeSales)}${state.sales.length>=state.salesLimit?`<div class="actions" style="margin-top:12px"><button id="load-more-sales" class="btn btn-secondary">Cargar más ventas</button></div>`:""}`;
+  $$('[data-sale-detail]').forEach(button=>button.onclick=()=>saleDetail(activeSales.find(s=>s.id===button.dataset.saleDetail)));
+  $$('[data-delete-sale]').forEach(button=>button.onclick=async()=>{const sale=activeSales.find(s=>s.id===button.dataset.deleteSale);if(await confirmDialog("¿Querés anular esta venta? Se devolverán las unidades al stock.")){setBusy(button,true,"Anulando…");try{await deleteSaleTransaction({saleId:sale.id,user:state.profile});toast("Venta anulada y stock devuelto","success");}catch(error){toast(error.message,"error");setBusy(button,false);}}});
+  $("#load-more-sales",state.root)?.addEventListener("click",event=>{state.salesLimit+=200;setBusy(event.currentTarget,true,"Cargando…");subscribeSelected();});
+}
+
+function renderCancelledSales(){
+  const cancelled=state.sales.filter(sale=>["cancelled","deleted"].includes(sale.status));
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><div><h1>Ventas anuladas · ${escapeHtml(currentLocation()?.name||"Sin ubicación")}</h1><p class="muted">Restaurar una venta vuelve a descontar sus productos del stock.</p></div><div class="actions"><span class="badge danger">${cancelled.length} anuladas</span></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Código</th><th>Fecha</th><th>Vendedor</th><th>Productos</th><th>Total</th><th>Anulada</th><th></th></tr></thead><tbody>${cancelled.map(sale=>`<tr><td data-label="Código">${escapeHtml(sale.saleCode)}</td><td data-label="Fecha">${dateTime(sale.createdAt)}</td><td data-label="Vendedor">${escapeHtml(sale.sellerName)}</td><td data-label="Productos">${sale.totalItems}</td><td data-label="Total"><strong>${money(sale.total)}</strong></td><td data-label="Anulada">${dateTime(sale.cancelledAt||sale.deletedAt)}</td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-ghost btn-small" data-cancelled-detail="${sale.id}">Ver</button><button class="btn btn-primary btn-small" data-restore-sale="${sale.id}">Restaurar venta</button></div></td></tr>`).join("")||`<tr><td colspan="7"><div class="empty">No hay ventas anuladas en esta ubicación</div></td></tr>`}</tbody></table></div>${state.sales.length>=state.salesLimit?`<div class="actions" style="margin-top:12px"><button id="load-more-cancelled-sales" class="btn btn-secondary">Cargar más ventas</button></div>`:""}`;
+  $$('[data-cancelled-detail]').forEach(button=>button.onclick=()=>saleDetail(cancelled.find(sale=>sale.id===button.dataset.cancelledDetail)));
+  $$('[data-restore-sale]').forEach(button=>button.onclick=async()=>{const sale=cancelled.find(item=>item.id===button.dataset.restoreSale);if(!await confirmDialog("¿Querés restaurar esta venta? Se volverán a descontar las unidades del stock."))return;setBusy(button,true,"Restaurando…");try{await restoreSaleTransaction({saleId:sale.id,user:state.profile});toast("Venta restaurada y stock actualizado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
+  $("#load-more-cancelled-sales",state.root)?.addEventListener("click",event=>{state.salesLimit+=200;setBusy(event.currentTarget,true,"Cargando…");subscribeSelected();});
+}
+
+function saleDetail(sale){openModal({title:sale.saleCode,content:`<p><strong>${escapeHtml(sale.locationName)}</strong><br>${dateTime(sale.createdAt)} · ${escapeHtml(sale.sellerName)}</p><div class="table-wrap"><table><thead><tr><th>Producto</th><th>Cant.</th><th>Unitario</th><th>Subtotal</th></tr></thead><tbody>${sale.items.map(item=>`<tr><td>${escapeHtml(item.name)}</td><td>${item.qty}</td><td>${money(item.unitPrice)}</td><td>${money(item.subtotal)}</td></tr>`).join("")}</tbody></table></div><div class="totals"><div class="total-line"><span>Subtotal</span><strong>${money(sale.subtotal)}</strong></div>${sale.discount?`<div class="total-line discount-line"><span>${escapeHtml(sale.discount.name)}</span><strong>− ${money(sale.discount.amountApplied)}</strong></div>`:""}<div class="total-line grand"><span>Total</span><strong>${money(sale.total)}</strong></div></div>`});}
+
+function renderExports(){
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Exportar CSV</h1></div><div class="cards"><section class="card"><h3>Ventas de la ubicación</h3><p class="muted">Filtrá opcionalmente las últimas ${state.sales.length} ventas cargadas de ${escapeHtml(currentLocation()?.name||"")}.</p><label>Fecha<input id="export-date" type="date"></label><label>Vendedor<select id="export-seller"><option value="">Todos</option>${state.users.filter(user=>user.role==="seller").map(user=>`<option value="${user.id}">${escapeHtml(user.name)}</option>`).join("")}</select></label><button id="export-sales" class="btn btn-primary">Descargar ventas</button></section><section class="card"><h3>Stock actual</h3><p class="muted">Estado de todos los productos de la ubicación seleccionada.</p><button id="export-stock" class="btn btn-secondary">Descargar stock</button></section></div>`;
+  $("#export-sales").onclick=()=>{
+    const date=$("#export-date").value,sellerId=$("#export-seller").value;
+    const filtered=state.sales.filter(sale=>(!sellerId||sale.sellerId===sellerId)&&(!date||sale.createdAt?.toDate?.().toLocaleDateString("en-CA")===date));
+    downloadCsv(`ventas-${currentLocation()?.codePrefix||"ubicacion"}.csv`,filtered.map(sale=>({codigo:sale.saleCode,fecha:dateOnly(sale.createdAt),hora:timeOnly(sale.createdAt),ubicacion:sale.locationName,vendedor:sale.sellerName,productos:sale.items?.map(i=>i.name).join(" | "),cantidades:sale.items?.map(i=>i.qty).join(" | "),subtotal:sale.subtotal,descuento:sale.discount?.amountApplied||0,total:sale.total,estado:sale.status})));
+  };
+  $("#export-stock").onclick=()=>downloadCsv(`stock-${currentLocation()?.codePrefix||"ubicacion"}.csv`,state.stock.map(item=>({ubicacion:currentLocation()?.name,producto:item.productName,abreviacion:item.abbreviation,precio:item.price,stock_inicial:item.initialStock,stock_actual:item.currentStock,alerta_amarilla:item.yellowAlertQty,alerta_roja:item.redAlertQty,activo:item.active?"si":"no"})));
+}

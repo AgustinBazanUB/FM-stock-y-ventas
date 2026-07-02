@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="110" fill="#315b43"/>
+  <path d="M256 96c-72 0-130 58-130 130 0 98 130 194 130 194s130-96 130-194c0-72-58-130-130-130Z" fill="#f8f2e7"/>
+  <path d="M256 154c-46 0-82 36-82 82 0 55 82 116 82 116s82-61 82-116c0-46-36-82-82-82Z" fill="#d3a349"/>
+  <text x="256" y="270" text-anchor="middle" font-family="Arial,sans-serif" font-size="80" font-weight="700" fill="#315b43">FM</text>
+</svg>
