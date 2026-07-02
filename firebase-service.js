@@ -193,22 +193,22 @@ export async function configureStock({locationId, product, values, user}) {
   await runTransaction(db, async transaction => {
     const existing = await transaction.get(stockRef);
     const wasDeleted = existing.exists() && existing.data().deleted === true;
-    const previousInitial = existing.exists() ? Number(existing.data().initialStock || 0) : 0;
-    const oldStock = existing.exists() ? Number(existing.data().currentStock || 0) : 0;
-    const initialDifference = wasDeleted ? 0 : initial - previousInitial;
-    const currentStock = wasDeleted ? 0 : existing.exists() ? oldStock + initialDifference : initial;
+    const previousInitial = existing.exists() && !wasDeleted ? Number(existing.data().initialStock || 0) : 0;
+    const oldStock = existing.exists() && !wasDeleted ? Number(existing.data().currentStock || 0) : 0;
+    const initialDifference = initial - previousInitial;
+    const currentStock = existing.exists() && !wasDeleted ? oldStock + initialDifference : initial;
     if (currentStock < 0) throw new Error("No se puede reducir el stock inicial porque el stock actual quedaría negativo");
     transaction.set(stockRef, {
       productId:product.id, productName:product.name, abbreviation:product.abbreviation,
       imageUrl:product.imageUrl || "", thumbUrl:product.thumbUrl || "",
-      price, initialStock:wasDeleted ? 0 : initial,
+      price, initialStock:initial,
       currentStock, yellowAlertQty, redAlertQty,
       active:Boolean(values.active), buttonKey:values.buttonKey || product.buttonKey || "", buttonCode:values.buttonCode || product.buttonCode || "",
       buttonLabel:values.buttonLabel || product.buttonLabel || "", deleted:false, deletedAt:null, productDeleted:false, updatedAt:serverTimestamp()
     }, {merge:true});
-    if ((!existing.exists() && initial > 0) || (existing.exists() && !wasDeleted && initialDifference !== 0)) transaction.set(movementRef, {
-      locationId, productId:product.id, type:existing.exists()?"initial_adjustment":"initial", qty:existing.exists()?initialDifference:initial,
-      previousStock:oldStock, newStock:currentStock, reason:existing.exists()?"Corrección de stock inicial":"Stock inicial",
+    if (((!existing.exists() || wasDeleted) && initial > 0) || (existing.exists() && !wasDeleted && initialDifference !== 0)) transaction.set(movementRef, {
+      locationId, productId:product.id, type:existing.exists()&&!wasDeleted?"initial_adjustment":"initial", qty:existing.exists()&&!wasDeleted?initialDifference:initial,
+      previousStock:oldStock, newStock:currentStock, reason:existing.exists()&&!wasDeleted?"Corrección de stock inicial":"Stock inicial",
       userId:user.id, userName:user.name, saleId:"", createdAt:serverTimestamp()
     });
   });
