@@ -408,6 +408,16 @@ export async function listSellerSales(sellerId, max = 100) {
   return docsToArray(await getDocs(query(collection(db, "sales"), where("sellerId","==",sellerId), orderBy("createdAt","desc"), limit(max))));
 }
 
+export async function listSellerDailyLocationSales(sellerId, locationId, dayStart) {
+  return docsToArray(await getDocs(query(
+    collection(db, "sales"),
+    where("locationId","==",locationId),
+    where("sellerId","==",sellerId),
+    where("createdAt",">=",Timestamp.fromDate(dayStart)),
+    orderBy("createdAt","desc")
+  )));
+}
+
 export async function listSalesByLocation(locationId, max = 500) {
   return docsToArray(await getDocs(query(collection(db, "sales"), where("locationId","==",locationId), orderBy("createdAt","desc"), limit(max))));
 }
