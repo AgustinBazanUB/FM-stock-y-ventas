@@ -7,3 +7,6 @@ firestore-debug.log
 .DS_Store
 dist/
 .cache/
+
+# Local Netlify folder
+.netlify
