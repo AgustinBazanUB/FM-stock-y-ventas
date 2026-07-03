@@ -6,6 +6,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
 import {localDateKey} from "./utils.js";
 import {calculateDiscountSummary} from "./discounts.js";
+import {normalizePayment} from "./payments.js";
 
 const config = window.FLOR_MIA_FIREBASE_CONFIG;
 if (!config) throw new Error("Falta la configuración de Firebase");
@@ -198,7 +199,6 @@ export async function configureStock({locationId, product, values, user}) {
     const oldStock = existing.exists() && !wasDeleted ? Number(existing.data().currentStock || 0) : 0;
     const initialDifference = initial - previousInitial;
     const currentStock = existing.exists() && !wasDeleted ? oldStock + initialDifference : initial;
-    if (currentStock < 0) throw new Error("No se puede reducir el stock inicial porque el stock actual quedaría negativo");
     transaction.set(stockRef, {
       productId:product.id, productName:product.name, abbreviation:product.abbreviation,
       imageUrl:product.imageUrl || "", thumbUrl:product.thumbUrl || "",
@@ -237,7 +237,6 @@ export async function addStock({locationId, productId, qty, reason, user}) {
     if (!snap.exists() || snap.data().deleted === true) throw new Error("El producto no está cargado en esta ubicación");
     const previousStock = Number(snap.data().currentStock || 0);
     const newStock = previousStock + quantity;
-    if (newStock < 0) throw new Error("El stock no puede quedar negativo");
     transaction.update(stockRef, {currentStock:newStock, updatedAt:serverTimestamp()});
     transaction.set(movementRef, {locationId, productId, type:"add", qty:quantity, previousStock, newStock,
       reason:reason || "Ingreso de mercadería", userId:user.id, userName:user.name, saleId:"", createdAt:serverTimestamp()});
@@ -257,20 +256,14 @@ function cleanSaleItems(items) {
   }, []);
 }
 
-const paymentLabels = {credit:"Pago Credito", debit:"Pago debito", alias:"Pago Alias", cash:"Pago eft"};
-function cleanPayment(paymentMethod, paymentMethodLabel) {
-  if (!Object.hasOwn(paymentLabels,paymentMethod)) throw new Error("Elegí una forma de pago antes de registrar la venta.");
-  return {paymentMethod,paymentMethodLabel:paymentMethodLabel===paymentLabels[paymentMethod]?paymentMethodLabel:paymentLabels[paymentMethod]};
-}
-
-export async function createSale({location, seller, items, discounts, discount, paymentMethod, paymentMethodLabel, offlineSale = null}) {
+export async function createSale({location, seller, items, discounts, discount, paymentMethod, paymentMethodLabel, payments, offlineSale = null}) {
   const saleItems = cleanSaleItems(items);
   if (!saleItems.length) throw new Error("La venta está vacía");
   const subtotal = saleItems.reduce((sum, item) => sum + item.subtotal, 0);
   const discountSummary = calculateDiscountSummary(Array.isArray(discounts)?discounts:(discount?[discount]:[]),subtotal);
-  const payment = cleanPayment(paymentMethod,paymentMethodLabel);
   const total = discountSummary.total;
   if (total < 0) throw new Error("El total no puede ser negativo");
+  const payment = normalizePayment(paymentMethod,paymentMethodLabel,payments,total);
   const dateKey = localDateKey();
   const prefix = String(location.codePrefix || "LOC").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,8);
   const offlineLocalId = offlineSale?.localId ? String(offlineSale.localId).trim() : "";
@@ -289,7 +282,7 @@ export async function createSale({location, seller, items, discounts, discount, 
       if (existingSale.exists()) {
         const data = existingSale.data();
         if (data.offlineLocalId !== offlineLocalId || data.sellerId !== seller.id) throw new Error("El identificador offline ya está en uso");
-        return {id:saleRef.id, saleCode:data.saleCode, total:data.total, paymentMethod:data.paymentMethod, paymentMethodLabel:data.paymentMethodLabel, createdAt:data.createdAt};
+        return {id:saleRef.id, saleCode:data.saleCode, total:data.total, paymentMethod:data.paymentMethod, paymentMethodLabel:data.paymentMethodLabel, payments:data.payments||[], createdAt:data.createdAt};
       }
     }
     const counterSnap = await transaction.get(counterRef);
@@ -302,7 +295,6 @@ export async function createSale({location, seller, items, discounts, discount, 
       const item = saleItems[index];
       if (!snap.exists() || snap.data().active === false || snap.data().deleted === true) throw new Error(`${item.name} no está habilitado en esta ubicación`);
       const previousStock = Number(snap.data().currentStock || 0);
-      if (item.qty > previousStock) throw new Error(`Stock insuficiente de ${item.name}`);
       const newStock = previousStock - item.qty;
       transaction.update(stockRefs[index], {currentStock:newStock, updatedAt:serverTimestamp()});
       transaction.set(movementRefs[index], {locationId:location.id, productId:item.productId, type:"sale", qty:-item.qty,
@@ -318,14 +310,14 @@ export async function createSale({location, seller, items, discounts, discount, 
   });
 }
 
-export async function updateSaleTransaction({saleId, seller, items, discounts, discount, paymentMethod, paymentMethodLabel}) {
+export async function updateSaleTransaction({saleId, seller, items, discounts, discount, paymentMethod, paymentMethodLabel, payments}) {
   const saleRef = doc(db, "sales", saleId);
   const newItems = cleanSaleItems(items);
   if (!newItems.length) throw new Error("La venta está vacía");
   const subtotal = newItems.reduce((sum,item) => sum + item.subtotal, 0);
   const discountSummary = calculateDiscountSummary(Array.isArray(discounts)?discounts:(discount?[discount]:[]),subtotal);
-  const payment = cleanPayment(paymentMethod,paymentMethodLabel);
   const total = discountSummary.total;
+  const payment = normalizePayment(paymentMethod,paymentMethodLabel,payments,total);
   return runTransaction(db, async transaction => {
     const saleSnap = await transaction.get(saleRef);
     if (!saleSnap.exists()) throw new Error("La venta ya no existe");
@@ -345,7 +337,6 @@ export async function updateSaleTransaction({saleId, seller, items, discounts, d
       if (!snap.exists()) throw new Error("Falta el registro de stock de un producto");
       const previousStock = Number(snap.data().currentStock || 0);
       const newStock = previousStock + difference;
-      if (newStock < 0) throw new Error(`Stock insuficiente de ${snap.data().productName}`);
       transaction.update(stockRefs[index], {currentStock:newStock, updatedAt:serverTimestamp()});
       transaction.set(doc(collection(db, "stockMovements")), {locationId:sale.locationId, productId, type:"sale_edit", qty:difference,
         previousStock, newStock, reason:`Edición ${sale.saleCode}`, userId:seller.id, userName:seller.name, saleId, createdAt:serverTimestamp()});
@@ -397,7 +388,6 @@ export async function restoreSaleTransaction({saleId, user}) {
     stockSnaps.forEach((snap,index) => {
       const item = sale.items[index];
       if (!snap.exists() || snap.data().active !== true || snap.data().deleted === true) throw new Error(`${item.name} no está disponible en esta ubicación`);
-      if (Number(snap.data().currentStock || 0) < Number(item.qty)) throw new Error(`Stock insuficiente de ${item.name} para restaurar la venta`);
     });
     const movementRefs = sale.items.map(() => doc(collection(db,"stockMovements")));
     sale.items.forEach((item,index) => {

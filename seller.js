@@ -3,14 +3,10 @@ import {$, $$, escapeHtml, money, dateTime, timeOnly, toast, openModal, confirmD
 import {SellerKeyboard} from "./keyboard.js";
 import {calculateDiscountSummary, saleDiscountList, storedDiscountTotal} from "./discounts.js";
 import {savePendingSale, getPendingSales, markPendingSaleSynced, markPendingSaleError, deletePendingSale} from "./offline-sales.js";
+import {PAYMENT_OPTIONS, SINGLE_PAYMENT_METHODS, normalizePayment, salePaymentParts, paymentAllocationSummary, completeRemainingPayment} from "./payments.js";
 
 let state = null;
-const PAYMENT_METHODS = [
-  {value:"credit",label:"Pago Credito"},
-  {value:"debit",label:"Pago debito"},
-  {value:"alias",label:"Pago Alias"},
-  {value:"cash",label:"Pago eft"}
-];
+const PAYMENT_METHODS = PAYMENT_OPTIONS;
 
 export function destroySeller() {
   if (state?.onlineHandler) window.removeEventListener("online", state.onlineHandler);
@@ -22,7 +18,7 @@ export function destroySeller() {
 export async function renderSeller(root, profile, onLogout) {
   if (state?.profile?.id === profile.id) return;
   destroySeller();
-  state = {root, profile, onLogout, locations:[], discounts:[], appliedDiscounts:[], stock:[], sales:[], pendingSales:[], locationId:"", cart:new Map(), lastProductId:null, paymentMethod:null, editSale:null, view:"new", unsubStock:null, keyboard:null, keyboardActive:true, saving:false, syncingPending:false, onlineHandler:null, offlineHandler:null};
+  state = {root, profile, onLogout, locations:[], discounts:[], appliedDiscounts:[], stock:[], sales:[], pendingSales:[], payments:[], stockWarningsAccepted:new Set(), stockWarningOpen:false, locationId:"", cart:new Map(), lastProductId:null, paymentMethod:null, editSale:null, view:"new", unsubStock:null, keyboard:null, keyboardActive:true, saving:false, syncingPending:false, onlineHandler:null, offlineHandler:null};
   root.innerHTML = `<div class="center-screen"><div><div class="brand-mark">FM</div><p>Cargando punto de venta…</p></div></div>`;
   try {
     const [allLocations, allDiscounts] = await Promise.all([listAllowedLocations(profile.allowedLocationIds || []), listActiveDiscounts()]);
@@ -78,7 +74,7 @@ function sellerHelp(){openModal({title:"Cómo vender",onClose:resumeKeyboard,con
 
 function chooseLocation() {
   const modal=openModal({title:"Elegir ubicación",onClose:resumeKeyboard,content:`<div class="sale-list">${state.locations.map(item=>`<button class="sale-card" data-location="${item.id}"><strong>${escapeHtml(item.name)}</strong>${item.id===state.locationId?`<span class="badge ok">Actual</span>`:""}</button>`).join("")}</div>`});
-  $$('[data-location]',modal.root).forEach(button=>button.onclick=()=>{if(state.cart.size&&!confirm("El carrito actual se vaciará al cambiar de ubicación. ¿Continuar?"))return;state.locationId=button.dataset.location;localStorage.setItem(`flor-mia-location-${state.profile.id}`,state.locationId);state.cart.clear();state.appliedDiscounts=[];state.paymentMethod=null;state.editSale=null;state.view="new";updateLocationTitle();subscribeStock();modal.close();renderView();});
+  $$('[data-location]',modal.root).forEach(button=>button.onclick=()=>{if(state.cart.size&&!confirm("El carrito actual se vaciará al cambiar de ubicación. ¿Continuar?"))return;state.locationId=button.dataset.location;localStorage.setItem(`flor-mia-location-${state.profile.id}`,state.locationId);state.cart.clear();state.appliedDiscounts=[];state.paymentMethod=null;state.payments=[];state.stockWarningsAccepted.clear();state.editSale=null;state.view="new";updateLocationTitle();subscribeStock();modal.close();renderView();});
 }
 
 function subscribeStock() {
@@ -98,20 +94,40 @@ function renderView() {
 function renderNewSale() {
   const content=$("#seller-content",state.root);if(!content)return;
   content.innerHTML=`${!navigator.onLine?`<div class="seller-notice offline">Sin conexión. Las ventas nuevas se guardarán en este dispositivo y quedarán pendientes de sincronizar.</div>`:""}${state.editSale?`<div class="seller-notice">Editando ${escapeHtml(state.editSale.saleCode)} <button id="cancel-edit" class="btn btn-ghost btn-small">Cancelar edición</button></div>`:""}<input id="key-capture" class="key-capture" aria-hidden="true" inputmode="none" autocomplete="off"><div class="key-status"><small id="key-hint">${state.keyboardActive?"Botonera activa":"Botonera desactivada"}</small><button id="activate-keyboard" class="btn ${state.keyboardActive?"btn-secondary":"btn-primary"}">${state.keyboardActive?"Desactivar botonera":"Activar botonera"}</button></div>
-  <section class="product-grid" aria-label="Productos">${state.stock.map(product=>`<button class="product-tile" data-product="${product.id}" ${saleLimit(product)<=0?"disabled":""}><span class="key-badge">${escapeHtml(product.buttonKey||"")}</span><img loading="lazy" src="${imageOrPlaceholder(product.thumbUrl,product.abbreviation)}" alt=""><strong>${escapeHtml(product.abbreviation)}</strong><small>Stock ${product.currentStock}</small></button>`).join("")||`<div class="empty">No hay productos disponibles</div>`}</section>
-  <section class="card cart-card"><header class="cart-head"><h2>Venta actual</h2><button type="button" id="clear-cart" class="btn btn-ghost btn-small" ${state.cart.size?"":"disabled"}>Vaciar carrito</button></header><div id="cart-lines"></div><div class="totals"><button type="button" id="choose-discount" class="btn btn-secondary btn-small">Agregar descuento</button><div id="applied-discounts" class="applied-discounts"></div><div class="total-line"><span>Subtotal</span><strong id="sale-subtotal"></strong></div><div class="total-line discount-line"><span>Total descuentos</span><strong id="sale-discount"></strong></div><div class="total-line"><span>Productos</span><strong id="sale-items"></strong></div><div class="total-line grand"><span>Total final</span><strong id="sale-total"></strong></div><div class="payment-section"><strong>Forma de pago *</strong><div class="payment-grid">${PAYMENT_METHODS.map(method=>`<button type="button" class="payment-option ${state.paymentMethod?.value===method.value?"selected":""}" data-payment="${method.value}" aria-pressed="${state.paymentMethod?.value===method.value}">${method.label}</button>`).join("")}</div></div></div></section>
+  <section class="product-grid" aria-label="Productos">${state.stock.map(product=>`<button class="product-tile" data-product="${product.id}"><span class="key-badge">${escapeHtml(product.buttonKey||"")}</span><img loading="lazy" src="${imageOrPlaceholder(product.thumbUrl,product.abbreviation)}" alt=""><strong>${escapeHtml(product.abbreviation)}</strong><small>Stock ${product.currentStock}</small></button>`).join("")||`<div class="empty">No hay productos disponibles</div>`}</section>
+  <section class="card cart-card"><header class="cart-head"><h2>Venta actual</h2><button type="button" id="clear-cart" class="btn btn-ghost btn-small" ${state.cart.size?"":"disabled"}>Vaciar carrito</button></header><div id="cart-lines"></div><div class="totals"><button type="button" id="choose-discount" class="btn btn-secondary btn-small">Agregar descuento</button><div id="applied-discounts" class="applied-discounts"></div><div class="total-line"><span>Subtotal</span><strong id="sale-subtotal"></strong></div><div class="total-line discount-line"><span>Total descuentos</span><strong id="sale-discount"></strong></div><div class="total-line"><span>Productos</span><strong id="sale-items"></strong></div><div class="total-line grand"><span>Total final</span><strong id="sale-total"></strong></div><div class="payment-section"><strong>Forma de pago *</strong><div class="payment-grid">${PAYMENT_METHODS.map(method=>`<button type="button" class="payment-option ${state.paymentMethod?.value===method.value?"selected":""}" data-payment="${method.value}" aria-pressed="${state.paymentMethod?.value===method.value}">${method.label}</button>`).join("")}</div>${state.paymentMethod?.value==="multiple"?`<p class="multiple-payment-selected">${state.payments.map(payment=>`${escapeHtml(payment.label)}: ${money(payment.amount)}`).join(" · ")}</p>`:""}</div></div></section>
   <footer class="seller-actions"><button id="ticket-button" class="btn btn-secondary">Tiquet</button><button id="continue-sale" class="btn btn-primary">${state.editSale?"Guardar cambios":"Continuar"}</button></footer>`;
   renderCartLines();
   $$('[data-product]',content).forEach(button=>button.onclick=()=>addProduct(button.dataset.product,true));
-  $("#clear-cart",content).onclick=async()=>{if(await confirmDialog("¿Querés vaciar el carrito?")){state.cart.clear();state.appliedDiscounts=[];state.paymentMethod=null;state.lastProductId=null;renderNewSale();}};
-  $$('[data-payment]',content).forEach(button=>button.onclick=()=>{state.paymentMethod=PAYMENT_METHODS.find(method=>method.value===button.dataset.payment)||null;updatePaymentButtons();});
+  $("#clear-cart",content).onclick=async()=>{if(await confirmDialog("¿Querés vaciar el carrito?")){state.cart.clear();state.appliedDiscounts=[];state.paymentMethod=null;state.payments=[];state.stockWarningsAccepted.clear();state.lastProductId=null;renderNewSale();}};
+  $$('[data-payment]',content).forEach(button=>button.onclick=async()=>{const method=PAYMENT_METHODS.find(item=>item.value===button.dataset.payment);if(method?.value==="multiple")return multiplePaymentModal();state.paymentMethod=method||null;state.payments=[];renderNewSale();});
   $("#choose-discount",content).onclick=discountModal;
   $("#ticket-button",state.root).onclick=()=>toast("El botón Tiquet quedó preparado para la futura integración fiscal.");
   $("#continue-sale",state.root).onclick=saveSale;$("#cancel-edit",content)?.addEventListener("click",cancelEdit);
   setupKeyboard();
 }
 
-function updatePaymentButtons(){$$('[data-payment]',state.root).forEach(button=>{const selected=button.dataset.payment===state.paymentMethod?.value;button.classList.toggle("selected",selected);button.setAttribute("aria-pressed",String(selected));});}
+function multiplePaymentModal(){
+  const total=discountSummary().total;
+  const previous=new Map(state.payments.map(payment=>[payment.method,payment.amount]));
+  const modal=openModal({title:"+2 pagos",onClose:resumeKeyboard,content:`<form id="multiple-payment-form"><div class="multiple-payment-total"><span>Total de la venta</span><strong>${money(total)}</strong></div><div class="multiple-payment-rows">${SINGLE_PAYMENT_METHODS.map(method=>{const option=PAYMENT_METHODS.find(item=>item.value===method);return `<label class="multiple-payment-row"><span>${escapeHtml(option.label)}</span><div><input name="${method}" type="number" min="0" step="1" inputmode="numeric" value="${previous.get(method)||""}" placeholder="0"><button type="button" class="btn btn-ghost btn-small" data-complete-payment="${method}">Completar restante</button></div></label>`;}).join("")}</div><div class="multiple-payment-status"><div><span>Total cargado</span><strong id="payments-loaded">${money(0)}</strong></div><p id="payments-difference"></p></div><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button id="confirm-multiple-payment" class="btn btn-primary">Confirmar</button></div></form>`});
+  const form=$("#multiple-payment-form",modal.root),confirm=$("#confirm-multiple-payment",modal.root);
+  const values=()=>SINGLE_PAYMENT_METHODS.map(method=>{const input=$(`input[name="${method}"]`,form);const raw=input.value.trim();const amount=raw===""?0:Number(raw);return {method,label:PAYMENT_METHODS.find(item=>item.value===method).label,amount,raw};});
+  const update=()=>{
+    const entries=values(),summary=paymentAllocationSummary(entries,total);
+    $("#payments-loaded",form).textContent=summary.invalid?"Monto inválido":money(summary.loaded);
+    const differenceNode=$("#payments-difference",form);differenceNode.className=summary.difference===0&&!summary.invalid&&summary.positiveCount>=2?"ok":"error";
+    differenceNode.textContent=summary.invalid?"Ingresá montos enteros mayores o iguales a cero.":summary.difference>0?`Falta cargar ${money(summary.difference)}`:summary.difference<0?`Te pasaste por ${money(Math.abs(summary.difference))}`:summary.positiveCount<2?"Usá al menos 2 formas de pago.":"La suma coincide con el total.";
+    confirm.disabled=summary.invalid||summary.difference!==0||summary.positiveCount<2;
+    $$('[data-complete-payment]',form).forEach(button=>button.disabled=summary.invalid||summary.difference<=0);
+    return entries;
+  };
+  $$('input[type="number"]',form).forEach(input=>input.addEventListener("input",update));
+  $$('[data-complete-payment]',form).forEach(button=>button.onclick=()=>{const completed=completeRemainingPayment(values(),button.dataset.completePayment,total);const entry=completed.find(item=>item.method===button.dataset.completePayment);if(!entry)return;const input=$(`input[name="${button.dataset.completePayment}"]`,form);input.value=String(entry.amount);update();});
+  $(".modal-cancel",form).onclick=modal.close;
+  form.onsubmit=event=>{event.preventDefault();try{const payment=normalizePayment("multiple","+2 pagos",update(),total);state.paymentMethod=PAYMENT_METHODS.find(method=>method.value==="multiple");state.payments=payment.payments;modal.close();renderNewSale();}catch(error){toast(error.message,"error");}};
+  update();
+}
 
 function renderCartLines() {
   const root=$("#cart-lines",state.root);if(!root)return;
@@ -125,16 +141,32 @@ function saleLimit(product){return Number(product.currentStock||0)+Number(state.
 function discountSummary(){return calculateDiscountSummary(state.appliedDiscounts,subtotal());}
 function updateTotals(){
   const sub=subtotal(),summary=discountSummary(),qty=[...state.cart.values()].reduce((sum,item)=>sum+item.qty,0);
+  if(state.paymentMethod?.value==="multiple"&&state.payments.reduce((sum,payment)=>sum+Number(payment.amount||0),0)!==summary.total){state.paymentMethod=null;state.payments=[];toast("El total cambió. Volvé a cargar +2 pagos.","error");}
   const list=$("#applied-discounts",state.root);
   if(list){list.innerHTML=summary.discounts.map((discount,index)=>`<div class="applied-discount"><span>${escapeHtml(discount.name)}</span><strong>− ${money(discount.amountApplied)}</strong><button type="button" class="btn btn-ghost btn-small" data-remove-discount="${index}" aria-label="Quitar ${escapeHtml(discount.name)}">Quitar</button></div>`).join("");$$('[data-remove-discount]',list).forEach(button=>button.onclick=()=>{state.appliedDiscounts.splice(Number(button.dataset.removeDiscount),1);renderNewSale();});}
   $("#sale-subtotal",state.root).textContent=money(sub);$("#sale-discount",state.root).textContent=summary.discountTotal?`− ${money(summary.discountTotal)}`:"—";$("#sale-items",state.root).textContent=qty;$("#sale-total",state.root).textContent=money(summary.total);
 }
 
-function addProduct(id, feedback=false) {
+function confirmStockWarning(product) {
+  if(state.stockWarningsAccepted.has(product.id))return Promise.resolve(true);
+  if(state.stockWarningOpen)return Promise.resolve(false);
+  state.stockWarningOpen=true;state.keyboard?.pause();
+  return new Promise(resolve=>{
+    let settled=false;
+    const finish=value=>{if(settled)return;settled=true;state.stockWarningOpen=false;resolve(value);};
+    const modal=openModal({title:"Stock cargado agotado",onClose:()=>{finish(false);resumeKeyboard();},content:`<p><strong>${escapeHtml(product.productName||product.name)}</strong></p><p>El stock cargado no alcanza. Si todavía hay producto físico, podés seguir vendiendo. El administrador ajustará el stock.</p><div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancel-stock-warning">Cancelar</button><button type="button" class="btn btn-warning" id="continue-stock-warning">Continuar</button></div>`});
+    $("#cancel-stock-warning",modal.root).onclick=()=>{finish(false);modal.close();};
+    $("#continue-stock-warning",modal.root).onclick=()=>{state.stockWarningsAccepted.add(product.id);finish(true);modal.close();};
+  });
+}
+
+async function ensureCartStockWarnings(){for(const item of state.cart.values()){const product=state.stock.find(stock=>stock.id===item.productId);if(product&&Number(item.qty)>saleLimit(product)&&!await confirmStockWarning(product))return false;}return true;}
+
+async function addProduct(id, feedback=false) {
   const product=state.stock.find(item=>item.id===id);if(!product)return;
   const existing=state.cart.get(id);const qty=(existing?.qty||0)+1;
   const available=saleLimit(product);
-  if(qty>available)return toast(`No hay más stock de ${product.productName}`,"error");
+  if(qty>available&&!await confirmStockWarning(product))return;
   if(existing){existing.qty=qty;existing.stock=available;existing.thumbUrl=product.thumbUrl||existing.thumbUrl;}
   else{
     const original=state.editSale?.items?.find(item=>item.productId===id);
@@ -145,7 +177,7 @@ function addProduct(id, feedback=false) {
   renderCartLines();if(feedback){const tile=$(`[data-product="${id}"]`,state.root);tile?.classList.add("pulse");setTimeout(()=>tile?.classList.remove("pulse"),160);navigator.vibrate?.(30);}
 }
 
-function changeQty(id,delta){const item=state.cart.get(id);if(!item)return;const next=item.qty+delta;if(next>item.stock)return toast("No hay stock suficiente","error");if(next<=0)state.cart.delete(id);else item.qty=next;if(!state.cart.size)state.appliedDiscounts=[];state.lastProductId=id;renderCartLines();}
+async function changeQty(id,delta){const item=state.cart.get(id);if(!item)return;const next=item.qty+delta;if(delta>0&&next>item.stock){const product=state.stock.find(stock=>stock.id===id)||item;if(!await confirmStockWarning(product))return;}if(next<=0)state.cart.delete(id);else item.qty=next;if(!state.cart.size)state.appliedDiscounts=[];state.lastProductId=id;renderCartLines();}
 function removeLast(){if(state.lastProductId)changeQty(state.lastProductId,-1);}
 
 function updateKeyboardStateUi(){const hint=$("#key-hint",state.root);const button=$("#activate-keyboard",state.root);if(hint)hint.textContent=state.keyboardActive?"Botonera activa":"Botonera desactivada";if(button){button.textContent=state.keyboardActive?"Desactivar botonera":"Activar botonera";button.className=`btn ${state.keyboardActive?"btn-secondary":"btn-primary"}`;}}
@@ -166,6 +198,8 @@ function clearCurrentSale() {
   state.cart.clear();
   state.appliedDiscounts=[];
   state.paymentMethod=null;
+  state.payments=[];
+  state.stockWarningsAccepted.clear();
   state.lastProductId=null;
   state.editSale=null;
 }
@@ -195,7 +229,8 @@ async function queueOfflineSale(payload, currentLocation) {
     discounts:payload.discounts,
     total:summary.total,
     paymentMethod:payload.paymentMethod,
-    paymentMethodLabel:payload.paymentMethodLabel
+    paymentMethodLabel:payload.paymentMethodLabel,
+    payments:payload.payments
   });
   clearCurrentSale();
   await refreshPendingSales();
@@ -213,7 +248,8 @@ async function saveSale() {
   if(!currentLocation?.id||currentLocation.active!==true)return toast("La ubicación seleccionada no está activa","error");
   if(!state.profile?.id)return toast("La sesión del vendedor no es válida","error");
   if(!navigator.onLine&&state.editSale)return toast("Necesitás conexión para editar una venta ya registrada.","error");
-  const payload={seller:state.profile,items:[...state.cart.values()],discounts:state.appliedDiscounts,paymentMethod:state.paymentMethod.value,paymentMethodLabel:state.paymentMethod.label};
+  if(!await ensureCartStockWarnings())return;
+  const payload={seller:state.profile,items:[...state.cart.values()],discounts:state.appliedDiscounts,paymentMethod:state.paymentMethod.value,paymentMethodLabel:state.paymentMethod.label,payments:state.payments};
   state.saving=true;
   updateConnectionStatus(navigator.onLine?"syncing":"offline");
   const button=$("#continue-sale",state.root);
@@ -234,7 +270,9 @@ async function saveSale() {
   }
 }
 
-function showReceipt(result){const modal=openModal({title:"Venta registrada",content:`<div class="receipt"><div class="brand-mark">FM</div><p class="muted">${escapeHtml(location()?.name||"")}</p><strong>${escapeHtml(result.saleCode)}</strong><div class="receipt-total">${money(result.total)}</div><p>${escapeHtml(result.paymentMethodLabel||"Sin forma de pago")} · ${timeOnly(result.createdAt)}</p><button class="btn btn-primary btn-block" id="receipt-close">Nueva venta</button></div>`,onClose:()=>{state.view="new";renderView();}});$("#receipt-close",modal.root).onclick=()=>{modal.close();state.view="new";renderView();};}
+function paymentDetailsHtml(sale){const parts=salePaymentParts(sale);return parts.length>1?`<div class="payment-breakdown">${parts.map(part=>`<div><span>${escapeHtml(part.label)}</span><strong>${money(part.amount)}</strong></div>`).join("")}</div>`:"";}
+
+function showReceipt(result){const modal=openModal({title:"Venta registrada",content:`<div class="receipt"><div class="brand-mark">FM</div><p class="muted">${escapeHtml(location()?.name||"")}</p><strong>${escapeHtml(result.saleCode)}</strong><div class="receipt-total">${money(result.total)}</div><p>${escapeHtml(result.paymentMethodLabel||"Sin forma de pago")} · ${timeOnly(result.createdAt)}</p>${paymentDetailsHtml(result)}<button class="btn btn-primary btn-block" id="receipt-close">Nueva venta</button></div>`,onClose:()=>{state.view="new";renderView();}});$("#receipt-close",modal.root).onclick=()=>{modal.close();state.view="new";renderView();};}
 
 async function refreshPendingSales() {
   try {
@@ -292,6 +330,7 @@ async function syncPendingSales({manual=false}={}) {
           discounts:sale.discounts,
           paymentMethod:sale.paymentMethod,
           paymentMethodLabel:sale.paymentMethodLabel,
+          payments:sale.payments,
           offlineSale:{localId:sale.localId,createdLocallyAt:sale.createdLocallyAt}
         });
         await markPendingSaleSynced(sale.localId,result.id);
@@ -330,7 +369,7 @@ function renderStockAvailable(){
   $("#stock-back-new",content).onclick=()=>{state.view="new";renderView();};
 }
 
-function saleDetail(sale){const discounts=saleDiscountList(sale),discountTotal=storedDiscountTotal(sale),subtotal=Number(sale.totalBeforeDiscounts??sale.subtotal??sale.total);const modal=openModal({title:sale.saleCode,content:`<p>${dateTime(sale.createdAt)}<br>${escapeHtml(sale.locationName)} · ${escapeHtml(sale.paymentMethodLabel||"Sin forma de pago")}</p>${sale.items.map(item=>`<div class="total-line"><span>${item.qty} × ${escapeHtml(item.name)}</span><strong>${money(item.subtotal)}</strong></div>`).join("")}<div class="total-line"><span>Subtotal</span><strong>${money(subtotal)}</strong></div>${discounts.map(discount=>`<div class="total-line discount-line"><span>${escapeHtml(discount.name||"Descuento")}</span><strong>− ${money(discount.amountApplied||0)}</strong></div>`).join("")}${discounts.length?`<div class="total-line discount-line"><span>Total descuentos</span><strong>− ${money(discountTotal)}</strong></div>`:""}<div class="total-line grand"><span>Total</span><strong>${money(sale.total)}</strong></div>${sale.status==="active"?`<div class="modal-actions"><button id="delete-sale" class="btn btn-danger">Anular</button><button id="edit-sale" class="btn btn-secondary">Editar</button></div>`:'<p class="badge danger">Venta anulada</p>'}`});$("#edit-sale",modal.root)?.addEventListener("click",()=>{modal.close();startEdit(sale);});$("#delete-sale",modal.root)?.addEventListener("click",async()=>{if(!await confirmDialog("¿Querés anular esta venta? Se devolverán las unidades al stock."))return;try{await deleteSaleTransaction({saleId:sale.id,user:state.profile});modal.close();await refreshSales();renderSales();toast("Venta anulada y stock devuelto","success");}catch(error){toast(error.message,"error");}});}
+function saleDetail(sale){const discounts=saleDiscountList(sale),discountTotal=storedDiscountTotal(sale),subtotal=Number(sale.totalBeforeDiscounts??sale.subtotal??sale.total);const modal=openModal({title:sale.saleCode,content:`<p>${dateTime(sale.createdAt)}<br>${escapeHtml(sale.locationName)} · ${escapeHtml(sale.paymentMethodLabel||"Sin forma de pago")}</p>${paymentDetailsHtml(sale)}${sale.items.map(item=>`<div class="total-line"><span>${item.qty} × ${escapeHtml(item.name)}</span><strong>${money(item.subtotal)}</strong></div>`).join("")}<div class="total-line"><span>Subtotal</span><strong>${money(subtotal)}</strong></div>${discounts.map(discount=>`<div class="total-line discount-line"><span>${escapeHtml(discount.name||"Descuento")}</span><strong>− ${money(discount.amountApplied||0)}</strong></div>`).join("")}${discounts.length?`<div class="total-line discount-line"><span>Total descuentos</span><strong>− ${money(discountTotal)}</strong></div>`:""}<div class="total-line grand"><span>Total</span><strong>${money(sale.total)}</strong></div>${sale.status==="active"?`<div class="modal-actions"><button id="delete-sale" class="btn btn-danger">Anular</button><button id="edit-sale" class="btn btn-secondary">Editar</button></div>`:'<p class="badge danger">Venta anulada</p>'}`});$("#edit-sale",modal.root)?.addEventListener("click",()=>{modal.close();startEdit(sale);});$("#delete-sale",modal.root)?.addEventListener("click",async()=>{if(!await confirmDialog("¿Querés anular esta venta? Se devolverán las unidades al stock."))return;try{await deleteSaleTransaction({saleId:sale.id,user:state.profile});modal.close();await refreshSales();renderSales();toast("Venta anulada y stock devuelto","success");}catch(error){toast(error.message,"error");}});}
 
-function startEdit(sale){const saleLocation=state.locations.find(item=>item.id===sale.locationId);if(!saleLocation)return toast("La ubicación de esta venta ya no está disponible","error");state.locationId=sale.locationId;localStorage.setItem(`flor-mia-location-${state.profile.id}`,state.locationId);state.editSale=sale;state.cart.clear();sale.items.forEach(item=>state.cart.set(item.productId,{id:item.productId,productId:item.productId,name:item.name,abbreviation:item.abbreviation,price:Number(item.unitPrice),unitPrice:Number(item.unitPrice),qty:Number(item.qty),stock:Number(item.qty),thumbUrl:""}));state.appliedDiscounts=saleDiscountList(sale).map(discount=>({id:discount.discountId||discount.id||"manual",discountId:discount.discountId||discount.id||"manual",name:discount.name,type:discount.type,value:Number(discount.value),source:discount.source||((discount.discountId||discount.id)==="manual"?"manual":"preset")}));state.paymentMethod=PAYMENT_METHODS.find(method=>method.value===sale.paymentMethod)||null;state.view="new";updateLocationTitle();subscribeStock();renderView();}
-function cancelEdit(){state.editSale=null;state.cart.clear();state.appliedDiscounts=[];state.paymentMethod=null;state.lastProductId=null;renderNewSale();}
+function startEdit(sale){const saleLocation=state.locations.find(item=>item.id===sale.locationId);if(!saleLocation)return toast("La ubicación de esta venta ya no está disponible","error");state.locationId=sale.locationId;localStorage.setItem(`flor-mia-location-${state.profile.id}`,state.locationId);state.editSale=sale;state.cart.clear();sale.items.forEach(item=>state.cart.set(item.productId,{id:item.productId,productId:item.productId,name:item.name,abbreviation:item.abbreviation,price:Number(item.unitPrice),unitPrice:Number(item.unitPrice),qty:Number(item.qty),stock:Number(item.qty),thumbUrl:""}));state.appliedDiscounts=saleDiscountList(sale).map(discount=>({id:discount.discountId||discount.id||"manual",discountId:discount.discountId||discount.id||"manual",name:discount.name,type:discount.type,value:Number(discount.value),source:discount.source||((discount.discountId||discount.id)==="manual"?"manual":"preset")}));state.paymentMethod=PAYMENT_METHODS.find(method=>method.value===sale.paymentMethod)||null;state.payments=sale.paymentMethod==="multiple"?salePaymentParts(sale):[];state.stockWarningsAccepted.clear();state.view="new";updateLocationTitle();subscribeStock();renderView();}
+function cancelEdit(){state.editSale=null;state.cart.clear();state.appliedDiscounts=[];state.paymentMethod=null;state.payments=[];state.stockWarningsAccepted.clear();state.lastProductId=null;renderNewSale();}

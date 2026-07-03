@@ -11,13 +11,38 @@ service cloud.firestore {
       return allowedLocation(locationId) && location.active == true
         && (!("deleted" in location) || location.deleted != true);
     }
-    function validPayment(data) {
+    function validPaymentPart(part) {
+      return part is map
+        && part.keys().hasOnly(["method", "label", "amount"])
+        && part.method in ["credit", "debit", "alias", "cash"]
+        && ((part.method == "credit" && part.label == "Pago Credito")
+          || (part.method == "debit" && part.label == "Pago debito")
+          || (part.method == "alias" && part.label == "Pago Alias")
+          || (part.method == "cash" && part.label == "Pago eft"))
+        && part.amount is int && part.amount > 0;
+    }
+    function validSinglePayment(data) {
       return data.paymentMethod in ["credit", "debit", "alias", "cash"]
         && ((data.paymentMethod == "credit" && data.paymentMethodLabel == "Pago Credito")
           || (data.paymentMethod == "debit" && data.paymentMethodLabel == "Pago debito")
           || (data.paymentMethod == "alias" && data.paymentMethodLabel == "Pago Alias")
           || (data.paymentMethod == "cash" && data.paymentMethodLabel == "Pago eft"));
     }
+    function validMultiplePayment(data) {
+      let size = data.payments.size();
+      return data.paymentMethod == "multiple" && data.paymentMethodLabel == "+2 pagos"
+        && data.payments is list && size >= 2 && size <= 4
+        && validPaymentPart(data.payments[0]) && validPaymentPart(data.payments[1])
+        && (size < 3 || validPaymentPart(data.payments[2]))
+        && (size < 4 || validPaymentPart(data.payments[3]))
+        && data.payments[0].method != data.payments[1].method
+        && (size < 3 || (data.payments[2].method != data.payments[0].method && data.payments[2].method != data.payments[1].method))
+        && (size < 4 || (data.payments[3].method != data.payments[0].method && data.payments[3].method != data.payments[1].method && data.payments[3].method != data.payments[2].method))
+        && data.payments[0].amount + data.payments[1].amount
+          + (size >= 3 ? data.payments[2].amount : 0)
+          + (size == 4 ? data.payments[3].amount : 0) == data.total;
+    }
+    function validPayment(data) { return validSinglePayment(data) || validMultiplePayment(data); }
 
     match /users/{uid} {
       allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
@@ -46,7 +71,7 @@ service cloud.firestore {
         allow create, delete: if isAdmin();
         allow update: if isAdmin() || (activeAllowedLocation(locationId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["currentStock", "updatedAt"])
-          && request.resource.data.currentStock >= 0);
+          && request.resource.data.currentStock is int);
       }
     }
 

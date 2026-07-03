@@ -1,7 +1,8 @@
+import {normalizePayment} from "./payments.js";
+
 const DB_NAME = "flor_mia_offline_db";
 const DB_VERSION = 1;
 const STORE_NAME = "pending_sales";
-const PAYMENT_LABELS = {credit:"Pago Credito", debit:"Pago debito", alias:"Pago Alias", cash:"Pago eft"};
 
 let dbPromise = null;
 
@@ -61,7 +62,6 @@ function wholeNumber(value, label, minimum = 0) {
 function normalizePendingSale(sale) {
   if (!sale || typeof sale !== "object") throw new Error("La venta pendiente no es válida.");
   const paymentMethod = requiredText(sale.paymentMethod, "la forma de pago");
-  if (!Object.hasOwn(PAYMENT_LABELS, paymentMethod)) throw new Error("La forma de pago no es válida.");
   const items = Array.isArray(sale.items) ? sale.items.map(item => {
     const unitPrice = wholeNumber(item.unitPrice, `El precio de ${item.name || "un producto"}`);
     const qty = wholeNumber(item.qty, `La cantidad de ${item.name || "un producto"}`, 1);
@@ -78,6 +78,7 @@ function normalizePendingSale(sale) {
   const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0);
   const total = wholeNumber(sale.total, "El total");
   if (total > subtotal) throw new Error("El total de la venta pendiente no es válido.");
+  const payment = normalizePayment(paymentMethod,sale.paymentMethodLabel,sale.payments,total);
   const discounts = Array.isArray(sale.discounts) ? sale.discounts.map(discount => ({
     discountId:String(discount.discountId || discount.id || "manual"),
     name:requiredText(discount.name || "Descuento", "el nombre del descuento"),
@@ -107,8 +108,7 @@ function normalizePendingSale(sale) {
     subtotal,
     totalItems:items.reduce((sum, item) => sum + item.qty, 0),
     total,
-    paymentMethod,
-    paymentMethodLabel:PAYMENT_LABELS[paymentMethod],
+    ...payment,
     clientStatus:"offline_pending"
   };
 }
