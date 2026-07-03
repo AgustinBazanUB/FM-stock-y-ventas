@@ -1,6 +1,9 @@
 export const $ = (selector, root = document) => root.querySelector(selector);
 export const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
+const PRODUCT_IMAGE_FALLBACK = "/assets/img/placeholder-producto.png";
+const LOCAL_IMAGE_VERSION = "20260703-1";
+
 export function escapeHtml(value = "") {
   return String(value).replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
 }
@@ -107,10 +110,25 @@ export function downloadCsv(filename, rows) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function imageOrPlaceholder(url, abbreviation = "FM") {
-  if (url) return escapeHtml(url);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="120" height="120" rx="20" fill="#e7efe9"/><text x="60" y="70" text-anchor="middle" font-family="Arial" font-size="30" font-weight="700" fill="#315b43">${escapeHtml(abbreviation.slice(0,4))}</text></svg>`;
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+export function getSafeImageUrl(url) {
+  if (typeof url !== "string" || !url.trim()) return PRODUCT_IMAGE_FALLBACK;
+  const normalized = url.trim().replace(/\\/g, "/");
+  if (/^(?:file:|[a-z]:\/|\/users\/|\/home\/)/i.test(normalized)) return PRODUCT_IMAGE_FALLBACK;
+  if (/^(?:https?:\/\/|data:image\/|blob:)/i.test(normalized)) return normalized;
+  const localPath = `/${normalized.replace(/^\.?(?:\/)+/, "")}`;
+  if (!localPath.startsWith("/assets/")) return PRODUCT_IMAGE_FALLBACK;
+  const separator = localPath.includes("?") ? "&" : "?";
+  return `${localPath}${separator}v=${LOCAL_IMAGE_VERSION}`;
+}
+
+export function handleImageError(image) {
+  if (!(image instanceof HTMLImageElement) || image.dataset.fallbackApplied === "true") return;
+  image.dataset.fallbackApplied = "true";
+  image.src = PRODUCT_IMAGE_FALLBACK;
+}
+
+export function imageOrPlaceholder(url) {
+  return escapeHtml(getSafeImageUrl(url));
 }
 
 export function formDataObject(form) {

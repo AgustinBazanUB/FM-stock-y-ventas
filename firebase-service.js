@@ -263,7 +263,7 @@ function cleanPayment(paymentMethod, paymentMethodLabel) {
   return {paymentMethod,paymentMethodLabel:paymentMethodLabel===paymentLabels[paymentMethod]?paymentMethodLabel:paymentLabels[paymentMethod]};
 }
 
-export async function createSale({location, seller, items, discounts, discount, paymentMethod, paymentMethodLabel}) {
+export async function createSale({location, seller, items, discounts, discount, paymentMethod, paymentMethodLabel, offlineSale = null}) {
   const saleItems = cleanSaleItems(items);
   if (!saleItems.length) throw new Error("La venta está vacía");
   const subtotal = saleItems.reduce((sum, item) => sum + item.subtotal, 0);
@@ -273,11 +273,25 @@ export async function createSale({location, seller, items, discounts, discount, 
   if (total < 0) throw new Error("El total no puede ser negativo");
   const dateKey = localDateKey();
   const prefix = String(location.codePrefix || "LOC").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,8);
+  const offlineLocalId = offlineSale?.localId ? String(offlineSale.localId).trim() : "";
+  if (offlineLocalId && !/^local_[A-Za-z0-9_-]+$/.test(offlineLocalId)) throw new Error("El identificador de la venta offline no es válido");
+  const createdLocallyAt = offlineLocalId ? new Date(offlineSale.createdLocallyAt) : null;
+  if (createdLocallyAt && Number.isNaN(createdLocallyAt.valueOf())) throw new Error("La fecha local de la venta offline no es válida");
   const counterRef = doc(db, "counters", `${prefix}_${dateKey}`);
-  const saleRef = doc(collection(db, "sales"));
+  const saleRef = offlineLocalId
+    ? doc(db, "sales", `offline_${seller.id}_${offlineLocalId}`.replaceAll("/", "_"))
+    : doc(collection(db, "sales"));
   const stockRefs = saleItems.map(item => doc(db, "locationStock", location.id, "items", item.productId));
   const movementRefs = saleItems.map(() => doc(collection(db, "stockMovements")));
   return runTransaction(db, async transaction => {
+    if (offlineLocalId) {
+      const existingSale = await transaction.get(saleRef);
+      if (existingSale.exists()) {
+        const data = existingSale.data();
+        if (data.offlineLocalId !== offlineLocalId || data.sellerId !== seller.id) throw new Error("El identificador offline ya está en uso");
+        return {id:saleRef.id, saleCode:data.saleCode, total:data.total, paymentMethod:data.paymentMethod, paymentMethodLabel:data.paymentMethodLabel, createdAt:data.createdAt};
+      }
+    }
     const counterSnap = await transaction.get(counterRef);
     const stockSnaps = [];
     for (const stockRef of stockRefs) stockSnaps.push(await transaction.get(stockRef));
@@ -298,6 +312,7 @@ export async function createSale({location, seller, items, discounts, discount, 
       sellerId:seller.id, sellerName:seller.name, items:saleItems, discounts:discountSummary.discounts, discount:null,
       discountTotal:discountSummary.discountTotal, totalBeforeDiscounts:discountSummary.totalBeforeDiscounts, ...payment, subtotal,
       totalItems:saleItems.reduce((sum,item) => sum + item.qty, 0), total, status:"active",
+      ...(offlineLocalId ? {offlineLocalId, createdOffline:true, createdLocallyAt:createdLocallyAt.toISOString(), syncedAt:serverTimestamp()} : {}),
       createdAt:serverTimestamp(), updatedAt:serverTimestamp(), deletedAt:null});
     return {id:saleRef.id, saleCode, total, ...payment, createdAt:new Date()};
   });

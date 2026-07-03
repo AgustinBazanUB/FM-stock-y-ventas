@@ -51,7 +51,9 @@ service cloud.firestore {
     }
 
     match /sales/{saleId} {
-      allow read: if isAdmin() || (isSeller() && resource.data.sellerId == request.auth.uid);
+      allow get: if isAdmin() || (isSeller() && (saleId.matches('^offline_' + request.auth.uid + '_.*$')
+        || resource.data.sellerId == request.auth.uid));
+      allow list: if isAdmin() || (isSeller() && resource.data.sellerId == request.auth.uid);
       allow create: if isAdmin() || (isSeller()
         && request.resource.data.sellerId == request.auth.uid
         && activeAllowedLocation(request.resource.data.locationId)

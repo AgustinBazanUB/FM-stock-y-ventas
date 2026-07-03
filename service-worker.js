@@ -1,8 +1,8 @@
-const CACHE = "flor-mia-shell-v12";
+const CACHE = "flor-mia-shell-v13";
 const SHELL = [
   "/", "/index.html", "/styles.css", "/firebase-config.js", "/app.js",
   "/auth.js", "/admin.js", "/seller.js", "/keyboard.js", "/utils.js", "/discounts.js", "/image-catalog.js",
-  "/firebase-service.js", "/manifest.webmanifest", "/assets/icons/icon.svg", "/assets/products/catalog.json",
+  "/firebase-service.js", "/offline-sales.js", "/manifest.webmanifest", "/assets/icons/icon.svg", "/assets/img/placeholder-producto.png", "/assets/products/catalog.json",
   "/assets/products/botella-500cc-blend.webp", "/assets/products/botella-500cc-blend-thumb.webp"
 ];
 
@@ -37,5 +37,5 @@ self.addEventListener("fetch", event => {
   event.respondWith(fetch(request).then(response => {
     if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
     return response;
-  }).catch(() => caches.match(request)));
+  }).catch(() => caches.match(request).then(response => response || (request.destination === "image" ? caches.match(request, {ignoreSearch:true}) : undefined))));
 });

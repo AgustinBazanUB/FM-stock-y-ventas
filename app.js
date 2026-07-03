@@ -1,7 +1,7 @@
 import {watchSession, submitLogin, logout} from "./auth.js";
 import {renderAdmin, destroyAdmin} from "./admin.js";
 import {renderSeller, destroySeller} from "./seller.js";
-import {$, toast, setBusy, updateConnectionStatus} from "./utils.js";
+import {$, toast, setBusy, updateConnectionStatus, handleImageError} from "./utils.js";
 
 const loading = $("#loading-screen");
 const loginScreen = $("#login-screen");
@@ -43,4 +43,5 @@ watchSession(async (user, profile, error) => {
 
 window.addEventListener("online", () => { updateConnectionStatus("online"); toast("Conexión restablecida", "success"); });
 window.addEventListener("offline", () => updateConnectionStatus("offline"));
+document.addEventListener("error", event => handleImageError(event.target), true);
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/service-worker.js").catch(() => {}));

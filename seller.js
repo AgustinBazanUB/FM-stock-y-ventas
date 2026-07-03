@@ -2,6 +2,7 @@ import {listAllowedLocations, listActiveDiscounts, subscribeLocationStock, creat
 import {$, $$, escapeHtml, money, dateTime, timeOnly, toast, openModal, confirmDialog, setBusy, imageOrPlaceholder, startOfToday, updateConnectionStatus} from "./utils.js";
 import {SellerKeyboard} from "./keyboard.js";
 import {calculateDiscountSummary, saleDiscountList, storedDiscountTotal} from "./discounts.js";
+import {savePendingSale, getPendingSales, markPendingSaleSynced, markPendingSaleError, deletePendingSale} from "./offline-sales.js";
 
 let state = null;
 const PAYMENT_METHODS = [
@@ -12,6 +13,8 @@ const PAYMENT_METHODS = [
 ];
 
 export function destroySeller() {
+  if (state?.onlineHandler) window.removeEventListener("online", state.onlineHandler);
+  if (state?.offlineHandler) window.removeEventListener("offline", state.offlineHandler);
   state?.unsubStock?.(); state?.keyboard?.destroy();
   state = null;
 }
@@ -19,7 +22,7 @@ export function destroySeller() {
 export async function renderSeller(root, profile, onLogout) {
   if (state?.profile?.id === profile.id) return;
   destroySeller();
-  state = {root, profile, onLogout, locations:[], discounts:[], appliedDiscounts:[], stock:[], sales:[], locationId:"", cart:new Map(), lastProductId:null, paymentMethod:null, editSale:null, view:"new", unsubStock:null, keyboard:null, keyboardActive:true, saving:false};
+  state = {root, profile, onLogout, locations:[], discounts:[], appliedDiscounts:[], stock:[], sales:[], pendingSales:[], locationId:"", cart:new Map(), lastProductId:null, paymentMethod:null, editSale:null, view:"new", unsubStock:null, keyboard:null, keyboardActive:true, saving:false, syncingPending:false, onlineHandler:null, offlineHandler:null};
   root.innerHTML = `<div class="center-screen"><div><div class="brand-mark">FM</div><p>Cargando punto de venta…</p></div></div>`;
   try {
     const [allLocations, allDiscounts] = await Promise.all([listAllowedLocations(profile.allowedLocationIds || []), listActiveDiscounts()]);
@@ -28,7 +31,9 @@ export async function renderSeller(root, profile, onLogout) {
     if (!state.locations.length) throw new Error("No tenés ubicaciones activas asignadas");
     state.locationId = localStorage.getItem(`flor-mia-location-${profile.id}`);
     if (!state.locations.some(location => location.id === state.locationId)) state.locationId = state.locations[0].id;
-    renderShell(); subscribeStock(); await refreshSales();
+    renderShell(); setupConnectionListeners(); subscribeStock();
+    await Promise.all([refreshSales(), refreshPendingSales()]);
+    if (navigator.onLine) syncPendingSales();
   } catch (error) {
     root.innerHTML = `<div class="center-screen"><div class="card"><h2>No se puede abrir el punto de venta</h2><p>${escapeHtml(error.message)}</p><button class="btn btn-ghost" id="seller-fail-logout">Cerrar sesión</button></div></div>`;
     $("#seller-fail-logout",root).onclick=onLogout;
@@ -38,20 +43,38 @@ export async function renderSeller(root, profile, onLogout) {
 function location() { return state.locations.find(item => item.id === state.locationId); }
 
 function renderShell() {
-  state.root.innerHTML = `<div class="seller-shell"><header class="app-header seller-header"><button id="open-drawer" class="icon-btn" aria-label="Abrir menú">☰</button><div class="seller-title"><strong>Flor Mia</strong><small id="seller-location-name"></small><small class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</small></div></header><div id="drawer-root"></div><main id="seller-content" class="seller-main"></main></div>`;
+  state.root.innerHTML = `<div class="seller-shell"><header class="app-header seller-header"><button id="open-drawer" class="icon-btn" aria-label="Abrir menú">☰</button><div class="seller-title"><strong>Flor Mia</strong><small id="seller-location-name"></small><small class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</small></div><button id="pending-sales-chip" class="pending-sales-chip" type="button">Pendientes: <b data-pending-count>0</b></button></header><div id="drawer-root"></div><main id="seller-content" class="seller-main"></main></div>`;
   $("#open-drawer",state.root).onclick=openDrawer;
-  updateLocationTitle(); updateConnectionStatus(); renderView();
+  $("#pending-sales-chip",state.root).onclick=async()=>{state.view="pending";await refreshPendingSales();renderView();};
+  updateLocationTitle(); updateConnectionStatus(); updatePendingUi(); renderView();
 }
 
 function updateLocationTitle() { const node=$("#seller-location-name",state.root); if(node)node.textContent=location()?.name||""; }
 
-function openDrawer() {
-  const root=$("#drawer-root",state.root);root.innerHTML=`<div class="drawer-backdrop"></div><aside class="drawer"><button class="icon-btn" id="close-drawer" aria-label="Cerrar">×</button><div class="brand">Flor Mia</div><button data-drawer="new">＋ Nueva venta</button><button data-drawer="sales">▤ Ventas totales</button><button data-drawer="stock">▦ Stock disponible</button><button data-drawer="location">⌖ Cambiar ubicación</button><button data-drawer="help">? Ayuda rápida</button><button data-drawer="connection">● ${navigator.onLine?"Online":"Sin conexión"}</button><button data-drawer="logout">↪ Cerrar sesión</button></aside>`;
-  const close=()=>root.innerHTML="";$("#close-drawer",root).onclick=close;$(".drawer-backdrop",root).onclick=close;
-  $$('[data-drawer]',root).forEach(button=>button.onclick=async()=>{const action=button.dataset.drawer;close();if(action==="new"){state.view="new";renderView();}if(action==="sales"){state.view="sales";await refreshSales();renderView();}if(action==="stock"){state.view="stock";renderView();}if(action==="location")chooseLocation();if(action==="help")sellerHelp();if(action==="connection")toast(navigator.onLine?"Tenés conexión a internet":"No hay conexión a internet",navigator.onLine?"success":"error");if(action==="logout")state.onLogout();});
+function setupConnectionListeners() {
+  state.onlineHandler = async () => {
+    if (!state) return;
+    updateConnectionStatus("online");
+    if (state.view === "new") renderNewSale();
+    await syncPendingSales();
+  };
+  state.offlineHandler = () => {
+    if (!state) return;
+    updateConnectionStatus("offline");
+    if (state.view === "new") renderNewSale();
+    if (state.view === "pending") renderPendingSales();
+  };
+  window.addEventListener("online", state.onlineHandler);
+  window.addEventListener("offline", state.offlineHandler);
 }
 
-function sellerHelp(){openModal({title:"Cómo vender",onClose:resumeKeyboard,content:`<ol class="help-steps"><li>Elegí la ubicación correcta.</li><li>Tocá productos o usá la botonera, que ya queda activa.</li><li>Revisá cantidades y descuento.</li><li>Presioná Continuar para registrar.</li></ol><p class="muted">Desde Ventas totales podés editar o anular una venta propia. La app ajusta el stock automáticamente.</p>`});}
+function openDrawer() {
+  const root=$("#drawer-root",state.root);root.innerHTML=`<div class="drawer-backdrop"></div><aside class="drawer"><button class="icon-btn" id="close-drawer" aria-label="Cerrar">×</button><div class="brand">Flor Mia</div><button data-drawer="new">＋ Nueva venta</button><button data-drawer="sales">▤ Mis ventas de hoy</button><button data-drawer="pending">↻ Ventas pendientes (${state.pendingSales.length})</button><button data-drawer="stock">▦ Stock disponible</button><button data-drawer="location">⌖ Cambiar ubicación</button><button data-drawer="help">? Ayuda rápida</button><button data-drawer="connection">● ${navigator.onLine?"Online":"Sin conexión"}</button><button data-drawer="logout">↪ Cerrar sesión</button></aside>`;
+  const close=()=>root.innerHTML="";$("#close-drawer",root).onclick=close;$(".drawer-backdrop",root).onclick=close;
+  $$('[data-drawer]',root).forEach(button=>button.onclick=async()=>{const action=button.dataset.drawer;close();if(action==="new"){state.view="new";renderView();}if(action==="sales"){state.view="sales";await refreshSales();renderView();}if(action==="pending"){state.view="pending";await refreshPendingSales();renderView();}if(action==="stock"){state.view="stock";renderView();}if(action==="location")chooseLocation();if(action==="help")sellerHelp();if(action==="connection")toast(navigator.onLine?"Tenés conexión a internet":"No hay conexión a internet",navigator.onLine?"success":"error");if(action==="logout")state.onLogout();});
+}
+
+function sellerHelp(){openModal({title:"Cómo vender",onClose:resumeKeyboard,content:`<ol class="help-steps"><li>Elegí la ubicación correcta.</li><li>Tocá productos o usá la botonera, que ya queda activa.</li><li>Revisá cantidades y descuento.</li><li>Presioná Continuar para registrar.</li></ol><p class="muted">Sin internet, la venta queda pendiente en este dispositivo. Al volver la conexión se sincroniza; también podés hacerlo desde Ventas pendientes.</p>`});}
 
 function chooseLocation() {
   const modal=openModal({title:"Elegir ubicación",onClose:resumeKeyboard,content:`<div class="sale-list">${state.locations.map(item=>`<button class="sale-card" data-location="${item.id}"><strong>${escapeHtml(item.name)}</strong>${item.id===state.locationId?`<span class="badge ok">Actual</span>`:""}</button>`).join("")}</div>`});
@@ -68,12 +91,13 @@ function reconcileCart(){for(const [id,item] of state.cart){const stock=state.st
 function renderView() {
   if(state.view==="new")return renderNewSale();
   state.keyboard?.destroy();state.keyboard=null;
-  state.view==="stock"?renderStockAvailable():renderSales();
+  if(state.view==="stock")return renderStockAvailable();
+  state.view==="pending"?renderPendingSales():renderSales();
 }
 
 function renderNewSale() {
   const content=$("#seller-content",state.root);if(!content)return;
-  content.innerHTML=`${!navigator.onLine?`<div class="seller-notice offline">Sin conexión. Podés armar la venta, pero necesitás internet para registrarla y descontar stock.</div>`:""}${state.editSale?`<div class="seller-notice">Editando ${escapeHtml(state.editSale.saleCode)} <button id="cancel-edit" class="btn btn-ghost btn-small">Cancelar edición</button></div>`:""}<input id="key-capture" class="key-capture" aria-hidden="true" inputmode="none" autocomplete="off"><div class="key-status"><small id="key-hint">${state.keyboardActive?"Botonera activa":"Botonera desactivada"}</small><button id="activate-keyboard" class="btn ${state.keyboardActive?"btn-secondary":"btn-primary"}">${state.keyboardActive?"Desactivar botonera":"Activar botonera"}</button></div>
+  content.innerHTML=`${!navigator.onLine?`<div class="seller-notice offline">Sin conexión. Las ventas nuevas se guardarán en este dispositivo y quedarán pendientes de sincronizar.</div>`:""}${state.editSale?`<div class="seller-notice">Editando ${escapeHtml(state.editSale.saleCode)} <button id="cancel-edit" class="btn btn-ghost btn-small">Cancelar edición</button></div>`:""}<input id="key-capture" class="key-capture" aria-hidden="true" inputmode="none" autocomplete="off"><div class="key-status"><small id="key-hint">${state.keyboardActive?"Botonera activa":"Botonera desactivada"}</small><button id="activate-keyboard" class="btn ${state.keyboardActive?"btn-secondary":"btn-primary"}">${state.keyboardActive?"Desactivar botonera":"Activar botonera"}</button></div>
   <section class="product-grid" aria-label="Productos">${state.stock.map(product=>`<button class="product-tile" data-product="${product.id}" ${saleLimit(product)<=0?"disabled":""}><span class="key-badge">${escapeHtml(product.buttonKey||"")}</span><img loading="lazy" src="${imageOrPlaceholder(product.thumbUrl,product.abbreviation)}" alt=""><strong>${escapeHtml(product.abbreviation)}</strong><small>Stock ${product.currentStock}</small></button>`).join("")||`<div class="empty">No hay productos disponibles</div>`}</section>
   <section class="card cart-card"><header class="cart-head"><h2>Venta actual</h2><button type="button" id="clear-cart" class="btn btn-ghost btn-small" ${state.cart.size?"":"disabled"}>Vaciar carrito</button></header><div id="cart-lines"></div><div class="totals"><button type="button" id="choose-discount" class="btn btn-secondary btn-small">Agregar descuento</button><div id="applied-discounts" class="applied-discounts"></div><div class="total-line"><span>Subtotal</span><strong id="sale-subtotal"></strong></div><div class="total-line discount-line"><span>Total descuentos</span><strong id="sale-discount"></strong></div><div class="total-line"><span>Productos</span><strong id="sale-items"></strong></div><div class="total-line grand"><span>Total final</span><strong id="sale-total"></strong></div><div class="payment-section"><strong>Forma de pago *</strong><div class="payment-grid">${PAYMENT_METHODS.map(method=>`<button type="button" class="payment-option ${state.paymentMethod?.value===method.value?"selected":""}" data-payment="${method.value}" aria-pressed="${state.paymentMethod?.value===method.value}">${method.label}</button>`).join("")}</div></div></div></section>
   <footer class="seller-actions"><button id="ticket-button" class="btn btn-secondary">Tiquet</button><button id="continue-sale" class="btn btn-primary">${state.editSale?"Guardar cambios":"Continuar"}</button></footer>`;
@@ -138,9 +162,158 @@ function resumeKeyboard(){if(state?.view==="new"&&state.keyboardActive)setTimeou
 
 function discountModal(){const modal=openModal({title:"Agregar descuento",content:`<form id="discount-form"><label>Descuentos guardados<select id="saved-discount"><option value="">Manual</option>${state.discounts.map(item=>`<option value="${item.id}">${escapeHtml(item.name)} · ${item.type==="percent"?`${item.value}%`:money(item.value)}</option>`).join("")}</select></label><label>Tipo<select name="type" id="discount-type"><option value="fixed">Monto fijo</option><option value="percent">Porcentaje</option></select></label><label>Valor entero<input name="value" id="discount-value" type="number" min="0" step="1" inputmode="numeric" required></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Agregar</button></div></form>`});$(".modal-cancel",modal.root).onclick=modal.close;$("#saved-discount",modal.root).onchange=event=>{const saved=state.discounts.find(d=>d.id===event.target.value);if(saved){$("#discount-type",modal.root).value=saved.type;$("#discount-value",modal.root).value=saved.value;}};$("#discount-form",modal.root).onsubmit=event=>{event.preventDefault();if(subtotal()<=0)return toast("Agregá productos antes del descuento","error");const saved=state.discounts.find(d=>d.id===$("#saved-discount",modal.root).value);const type=$("#discount-type",modal.root).value,value=Number($("#discount-value",modal.root).value);const entry={id:saved?.id||"manual",discountId:saved?.id||"manual",name:saved?.name||"Descuento manual",type,value,source:saved?"preset":"manual"};try{calculateDiscountSummary([entry],subtotal());state.appliedDiscounts.push(entry);modal.close();renderNewSale();}catch(error){toast(error.message,"error");}};}
 
-async function saveSale(){if(state.saving)return;if(!state.cart.size)return toast("La venta está vacía","error");if(!state.paymentMethod)return toast("Elegí una forma de pago antes de registrar la venta.","error");const currentLocation=location();if(!currentLocation?.id||currentLocation.active!==true)return toast("La ubicación seleccionada no está activa","error");if(!state.profile?.id)return toast("La sesión del vendedor no es válida","error");if(!navigator.onLine)return toast("Necesitás conexión para registrar la venta","error");state.saving=true;updateConnectionStatus("syncing");const button=$("#continue-sale",state.root);setBusy(button,true,state.editSale?"Guardando…":"Registrando…");try{const payload={seller:state.profile,items:[...state.cart.values()],discounts:state.appliedDiscounts,paymentMethod:state.paymentMethod.value,paymentMethodLabel:state.paymentMethod.label};const result=state.editSale?await updateSaleTransaction({...payload,saleId:state.editSale.id}):await createSale({...payload,location:currentLocation});state.cart.clear();state.appliedDiscounts=[];state.paymentMethod=null;state.lastProductId=null;state.editSale=null;await refreshSales();showReceipt(result);}catch(error){const message=error.code==="permission-denied"||error.message?.includes("permission")?"Firebase rechazó la venta. Revisá que el vendedor esté activo y asignado a esta ubicación.":error.message;toast(message,"error");setBusy(button,false);}finally{state.saving=false;updateConnectionStatus();}}
+function clearCurrentSale() {
+  state.cart.clear();
+  state.appliedDiscounts=[];
+  state.paymentMethod=null;
+  state.lastProductId=null;
+  state.editSale=null;
+}
+
+function newOfflineId() {
+  const random = crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  return `local_${random.replace(/[^A-Za-z0-9_-]/g, "")}`;
+}
+
+async function queueOfflineSale(payload, currentLocation) {
+  const summary = calculateDiscountSummary(payload.discounts, subtotal());
+  const localId = newOfflineId();
+  const pending = await savePendingSale({
+    localId,
+    localCode:`PEND-${Date.now().toString().slice(-8)}`,
+    status:"pending",
+    createdLocallyAt:new Date().toISOString(),
+    lastSyncAttemptAt:null,
+    syncError:"",
+    retryCount:0,
+    locationId:currentLocation.id,
+    locationName:currentLocation.name,
+    locationPrefix:currentLocation.codePrefix || "LOC",
+    sellerId:state.profile.id,
+    sellerName:state.profile.name,
+    items:payload.items.map(item => ({productId:item.productId || item.id, name:item.name, abbreviation:item.abbreviation || "", unitPrice:Number(item.unitPrice ?? item.price), qty:Number(item.qty)})),
+    discounts:payload.discounts,
+    total:summary.total,
+    paymentMethod:payload.paymentMethod,
+    paymentMethodLabel:payload.paymentMethodLabel
+  });
+  clearCurrentSale();
+  await refreshPendingSales();
+  state.view="new";
+  renderNewSale();
+  toast("Venta guardada sin conexión. Se sincronizará cuando vuelva internet.","success");
+  return pending;
+}
+
+async function saveSale() {
+  if(state.saving)return;
+  if(!state.cart.size)return toast("La venta está vacía","error");
+  if(!state.paymentMethod)return toast("Elegí una forma de pago antes de registrar la venta.","error");
+  const currentLocation=location();
+  if(!currentLocation?.id||currentLocation.active!==true)return toast("La ubicación seleccionada no está activa","error");
+  if(!state.profile?.id)return toast("La sesión del vendedor no es válida","error");
+  if(!navigator.onLine&&state.editSale)return toast("Necesitás conexión para editar una venta ya registrada.","error");
+  const payload={seller:state.profile,items:[...state.cart.values()],discounts:state.appliedDiscounts,paymentMethod:state.paymentMethod.value,paymentMethodLabel:state.paymentMethod.label};
+  state.saving=true;
+  updateConnectionStatus(navigator.onLine?"syncing":"offline");
+  const button=$("#continue-sale",state.root);
+  setBusy(button,true,state.editSale?"Guardando…":navigator.onLine?"Registrando…":"Guardando pendiente…");
+  try {
+    if(!navigator.onLine){await queueOfflineSale(payload,currentLocation);return;}
+    const result=state.editSale?await updateSaleTransaction({...payload,saleId:state.editSale.id}):await createSale({...payload,location:currentLocation});
+    clearCurrentSale();
+    await refreshSales();
+    showReceipt(result);
+  } catch(error) {
+    const message=error.code==="permission-denied"||error.message?.includes("permission")?"Firebase rechazó la venta. Revisá que el vendedor esté activo y asignado a esta ubicación.":error.message;
+    toast(message,"error");
+    setBusy(button,false);
+  } finally {
+    state.saving=false;
+    updateConnectionStatus();
+  }
+}
 
 function showReceipt(result){const modal=openModal({title:"Venta registrada",content:`<div class="receipt"><div class="brand-mark">FM</div><p class="muted">${escapeHtml(location()?.name||"")}</p><strong>${escapeHtml(result.saleCode)}</strong><div class="receipt-total">${money(result.total)}</div><p>${escapeHtml(result.paymentMethodLabel||"Sin forma de pago")} · ${timeOnly(result.createdAt)}</p><button class="btn btn-primary btn-block" id="receipt-close">Nueva venta</button></div>`,onClose:()=>{state.view="new";renderView();}});$("#receipt-close",modal.root).onclick=()=>{modal.close();state.view="new";renderView();};}
+
+async function refreshPendingSales() {
+  try {
+    const allSales = await getPendingSales();
+    if (!state) return;
+    state.pendingSales = allSales.filter(sale => sale.sellerId === state.profile.id && sale.status !== "synced");
+    updatePendingUi();
+  } catch (error) {
+    if (state) toast(`No se pudieron leer las ventas pendientes: ${error.message}`,"error");
+  }
+}
+
+function updatePendingUi() {
+  if (!state) return;
+  $$('[data-pending-count]',state.root).forEach(node => node.textContent=String(state.pendingSales.length));
+  const chip=$("#pending-sales-chip",state.root);
+  if(chip){chip.classList.toggle("has-pending",state.pendingSales.length>0);chip.disabled=state.syncingPending;}
+  $$('[data-sync-pending]',state.root).forEach(button=>{button.disabled=state.syncingPending||!navigator.onLine||!state.pendingSales.length;});
+}
+
+function pendingStatus(sale) {
+  return sale.status === "sync_error"
+    ? {label:"Error al sincronizar",className:"danger"}
+    : {label:"Pendiente de sincronizar",className:"warning"};
+}
+
+function renderPendingSales() {
+  const content=$("#seller-content",state.root);if(!content)return;
+  const cards=state.pendingSales.map(sale=>{const status=pendingStatus(sale);return `<article class="card pending-sale-card"><div class="row"><strong>${escapeHtml(sale.localCode||sale.localId)}</strong><span class="badge ${status.className}">${status.label}</span></div><div class="row"><span>${dateTime(sale.createdLocallyAt)}</span><strong>${money(sale.total)}</strong></div><small>${escapeHtml(sale.locationName)} · ${sale.totalItems} productos · ${escapeHtml(sale.paymentMethodLabel)}</small>${sale.syncError?`<p class="pending-error">${escapeHtml(sale.syncError)}</p>`:""}</article>`;}).join("");
+  content.innerHTML=`<div class="page-head"><div><h1>Ventas pendientes</h1><p class="muted">Guardadas sólo en este dispositivo hasta que se sincronicen.</p></div><button id="pending-back-new" class="btn btn-primary">Nueva venta</button></div><section class="card pending-summary"><div><span>Ventas pendientes</span><strong data-pending-count>${state.pendingSales.length}</strong></div><button class="btn btn-secondary" data-sync-pending>${state.syncingPending?"Sincronizando…":"Sincronizar pendientes"}</button></section>${!navigator.onLine?`<div class="seller-notice offline">Sin conexión. Podés revisar las ventas; la sincronización se habilitará cuando vuelva internet.</div>`:""}<div class="sale-list">${cards||`<div class="empty">No hay ventas pendientes</div>`}</div>`;
+  $("#pending-back-new",content).onclick=()=>{state.view="new";renderView();};
+  $("[data-sync-pending]",content)?.addEventListener("click",()=>syncPendingSales({manual:true}));
+  updatePendingUi();
+}
+
+async function syncPendingSales({manual=false}={}) {
+  if(!state||state.syncingPending)return;
+  if(!navigator.onLine){if(manual)toast("No hay conexión para sincronizar.","error");return;}
+  await refreshPendingSales();
+  if(!state)return;
+  const session=state;
+  const queue=[...session.pendingSales];
+  if(!queue.length){if(manual)toast("No hay ventas pendientes.","success");return;}
+  session.syncingPending=true;updateConnectionStatus("syncing");updatePendingUi();
+  if(session.view==="pending")renderPendingSales();
+  let synced=0,failed=0;
+  try{
+    for(const sale of queue){
+      if(state!==session||!navigator.onLine)break;
+      try{
+        const result=await createSale({
+          location:{id:sale.locationId,name:sale.locationName,codePrefix:sale.locationPrefix},
+          seller:session.profile,
+          items:sale.items,
+          discounts:sale.discounts,
+          paymentMethod:sale.paymentMethod,
+          paymentMethodLabel:sale.paymentMethodLabel,
+          offlineSale:{localId:sale.localId,createdLocallyAt:sale.createdLocallyAt}
+        });
+        await markPendingSaleSynced(sale.localId,result.id);
+        await deletePendingSale(sale.localId);
+        synced++;
+      }catch(error){
+        const message=String(error.message||"No se pudo sincronizar.");
+        try{await markPendingSaleError(sale.localId,message);}catch(_){/* Se reintentará porque la venta local no se eliminó. */}
+        failed++;
+      }
+    }
+  }finally{
+    if(state!==session)return;
+    session.syncingPending=false;
+    await refreshPendingSales();
+    if(synced)await refreshSales();
+    updateConnectionStatus();
+    if(session.view==="pending")renderPendingSales();
+    if(synced)toast(`${synced} venta${synced===1?"":"s"} sincronizada${synced===1?"":"s"}.`,"success");
+    if(failed)toast("No se pudo sincronizar una venta. Revisá el error; el stock no fue modificado.","error");
+  }
+}
 
 async function refreshSales(){try{state.sales=await listSellerDailyLocationSales(state.profile.id,state.locationId,startOfToday());}catch(error){toast(`No se pudieron cargar las ventas: ${error.message}`,"error");}}
 
