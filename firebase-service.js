@@ -5,6 +5,7 @@ import {
   limit, onSnapshot, runTransaction, serverTimestamp, Timestamp, writeBatch
 } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
 import {localDateKey} from "./utils.js";
+import {calculateDiscountSummary} from "./discounts.js";
 
 const config = window.FLOR_MIA_FIREBASE_CONFIG;
 if (!config) throw new Error("Falta la configuración de Firebase");
@@ -256,29 +257,19 @@ function cleanSaleItems(items) {
   }, []);
 }
 
-function cleanDiscount(discount, subtotal) {
-  if (!discount) return null;
-  if (!["fixed","percent"].includes(discount.type)) throw new Error("El tipo de descuento no es válido");
-  const value = wholeQuantity(discount.value || 0, "El descuento");
-  if (discount.type === "percent" && value > 100) throw new Error("El porcentaje no puede superar 100");
-  const amountApplied = discount.type === "percent" ? Math.round(subtotal * value / 100) : value;
-  if (amountApplied < 0 || amountApplied > subtotal) throw new Error("El descuento no puede superar el subtotal");
-  return {discountId:discount.id || discount.discountId || "manual", name:discount.name || "Descuento manual", type:discount.type, value, amountApplied};
-}
-
 const paymentLabels = {credit:"Pago Credito", debit:"Pago debito", alias:"Pago Alias", cash:"Pago eft"};
 function cleanPayment(paymentMethod, paymentMethodLabel) {
   if (!Object.hasOwn(paymentLabels,paymentMethod)) throw new Error("Elegí una forma de pago antes de registrar la venta.");
   return {paymentMethod,paymentMethodLabel:paymentMethodLabel===paymentLabels[paymentMethod]?paymentMethodLabel:paymentLabels[paymentMethod]};
 }
 
-export async function createSale({location, seller, items, discount, paymentMethod, paymentMethodLabel}) {
+export async function createSale({location, seller, items, discounts, discount, paymentMethod, paymentMethodLabel}) {
   const saleItems = cleanSaleItems(items);
   if (!saleItems.length) throw new Error("La venta está vacía");
   const subtotal = saleItems.reduce((sum, item) => sum + item.subtotal, 0);
-  const saleDiscount = cleanDiscount(discount, subtotal);
+  const discountSummary = calculateDiscountSummary(Array.isArray(discounts)?discounts:(discount?[discount]:[]),subtotal);
   const payment = cleanPayment(paymentMethod,paymentMethodLabel);
-  const total = subtotal - (saleDiscount?.amountApplied || 0);
+  const total = discountSummary.total;
   if (total < 0) throw new Error("El total no puede ser negativo");
   const dateKey = localDateKey();
   const prefix = String(location.codePrefix || "LOC").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,8);
@@ -304,21 +295,22 @@ export async function createSale({location, seller, items, discount, paymentMeth
         previousStock, newStock, reason:`Venta ${saleCode}`, userId:seller.id, userName:seller.name, saleId:saleRef.id, createdAt:serverTimestamp()});
     });
     transaction.set(saleRef, {saleCode, locationId:location.id, locationName:location.name, locationPrefix:prefix,
-      sellerId:seller.id, sellerName:seller.name, items:saleItems, discount:saleDiscount, ...payment, subtotal,
+      sellerId:seller.id, sellerName:seller.name, items:saleItems, discounts:discountSummary.discounts, discount:null,
+      discountTotal:discountSummary.discountTotal, totalBeforeDiscounts:discountSummary.totalBeforeDiscounts, ...payment, subtotal,
       totalItems:saleItems.reduce((sum,item) => sum + item.qty, 0), total, status:"active",
       createdAt:serverTimestamp(), updatedAt:serverTimestamp(), deletedAt:null});
     return {id:saleRef.id, saleCode, total, ...payment, createdAt:new Date()};
   });
 }
 
-export async function updateSaleTransaction({saleId, seller, items, discount, paymentMethod, paymentMethodLabel}) {
+export async function updateSaleTransaction({saleId, seller, items, discounts, discount, paymentMethod, paymentMethodLabel}) {
   const saleRef = doc(db, "sales", saleId);
   const newItems = cleanSaleItems(items);
   if (!newItems.length) throw new Error("La venta está vacía");
   const subtotal = newItems.reduce((sum,item) => sum + item.subtotal, 0);
-  const saleDiscount = cleanDiscount(discount, subtotal);
+  const discountSummary = calculateDiscountSummary(Array.isArray(discounts)?discounts:(discount?[discount]:[]),subtotal);
   const payment = cleanPayment(paymentMethod,paymentMethodLabel);
-  const total = subtotal - (saleDiscount?.amountApplied || 0);
+  const total = discountSummary.total;
   return runTransaction(db, async transaction => {
     const saleSnap = await transaction.get(saleRef);
     if (!saleSnap.exists()) throw new Error("La venta ya no existe");
@@ -343,7 +335,9 @@ export async function updateSaleTransaction({saleId, seller, items, discount, pa
       transaction.set(doc(collection(db, "stockMovements")), {locationId:sale.locationId, productId, type:"sale_edit", qty:difference,
         previousStock, newStock, reason:`Edición ${sale.saleCode}`, userId:seller.id, userName:seller.name, saleId, createdAt:serverTimestamp()});
     });
-    transaction.update(saleRef, {items:newItems, discount:saleDiscount, ...payment, subtotal, totalItems:newItems.reduce((sum,item) => sum + item.qty,0), total, updatedAt:serverTimestamp()});
+    transaction.update(saleRef, {items:newItems, discounts:discountSummary.discounts, discount:null,
+      discountTotal:discountSummary.discountTotal, totalBeforeDiscounts:discountSummary.totalBeforeDiscounts,
+      ...payment, subtotal, totalItems:newItems.reduce((sum,item) => sum + item.qty,0), total, updatedAt:serverTimestamp()});
     return {id:saleId, saleCode:sale.saleCode, total, ...payment, createdAt:new Date()};
   });
 }
