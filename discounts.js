@@ -7,6 +7,7 @@ function wholeDiscountValue(value) {
 export function calculateDiscountSummary(discounts, subtotal) {
   const totalBeforeDiscounts = Number(subtotal);
   if (!Number.isFinite(totalBeforeDiscounts) || totalBeforeDiscounts < 0) throw new Error("El subtotal no es válido");
+  let remainingTotal = totalBeforeDiscounts;
   const cleaned = (Array.isArray(discounts) ? discounts : []).filter(Boolean).map(discount => {
     if (!["fixed","percent"].includes(discount.type)) throw new Error("El tipo de descuento no es válido");
     const value = wholeDiscountValue(discount.value);
@@ -14,11 +15,12 @@ export function calculateDiscountSummary(discounts, subtotal) {
     const discountId = String(discount.discountId || discount.id || "manual").trim() || "manual";
     const source = discount.source === "preset" || discountId !== "manual" ? "preset" : "manual";
     const name = String(discount.name || (source === "manual" ? "Descuento manual" : "Descuento")).trim() || "Descuento manual";
-    const amountApplied = discount.type === "percent" ? Math.round(totalBeforeDiscounts * value / 100) : value;
+    const amountApplied = discount.type === "percent" ? Math.round(remainingTotal * value / 100) : value;
+    remainingTotal = Math.max(0,remainingTotal-amountApplied);
     return {discountId,name,type:discount.type,value,amountApplied,source};
   });
-  const discountTotal = Math.min(totalBeforeDiscounts, cleaned.reduce((sum,discount) => sum + discount.amountApplied, 0));
-  return {discounts:cleaned,discountTotal,totalBeforeDiscounts,total:Math.max(0,totalBeforeDiscounts-discountTotal)};
+  const discountTotal = totalBeforeDiscounts-remainingTotal;
+  return {discounts:cleaned,discountTotal,totalBeforeDiscounts,total:remainingTotal};
 }
 
 export function saleDiscountList(sale) {
