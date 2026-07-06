@@ -423,6 +423,15 @@ export async function listSellerDailyLocationSales(sellerId, locationId, dayStar
   )));
 }
 
+export async function listSalesByDateRange(start, end) {
+  return docsToArray(await getDocs(query(
+    collection(db,"sales"),
+    where("createdAt",">=",Timestamp.fromDate(start)),
+    where("createdAt","<",Timestamp.fromDate(end)),
+    orderBy("createdAt","asc")
+  )));
+}
+
 export async function listSalesByLocation(locationId, max = 500) {
   return docsToArray(await getDocs(query(collection(db, "sales"), where("locationId","==",locationId), orderBy("createdAt","desc"), limit(max))));
 }

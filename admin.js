@@ -3,13 +3,14 @@ import {
   saveUser, createSellerAccount, syncSellerAssignments, configureStock, addStock, subscribeLocationStock,
   subscribeLocationSales, deleteSaleTransaction, restoreSaleTransaction, listSellerSales, reauthenticateAdmin, deleteLocationLogical,
   restoreLocation, deleteProductLogical, restoreProduct, deleteDiscountLogical, restoreDiscount,
-  deleteLocationStock, deleteSellerLogical
+  deleteLocationStock, deleteSellerLogical, listSalesByDateRange
 } from "./firebase-service.js";
 import {$, $$, escapeHtml, money, dateTime, dateOnly, timeOnly, toast, openModal, confirmDialog, setBusy, formDataObject, imageOrPlaceholder, downloadCsv} from "./utils.js";
 import {recordNextKey} from "./keyboard.js";
 import {listProductImages} from "./image-catalog.js";
 import {saleDiscountList, storedDiscountTotal} from "./discounts.js";
 import {PAYMENT_LABELS as SALE_PAYMENT_LABELS, salePaymentParts, paymentsBreakdownText} from "./payments.js";
+import {currentMetricsValue, buildMetricsDateRange, applyMetricsFilters, calculateMetrics} from "./metrics.js";
 
 let state = null;
 const PAYMENT_LABELS = {...SALE_PAYMENT_LABELS,unknown:"Sin forma de pago"};
@@ -22,7 +23,7 @@ export function destroyAdmin() {
 export async function renderAdmin(root, profile, onLogout) {
   if (state?.profile?.id === profile.id) return;
   destroyAdmin();
-  state = {root, profile, onLogout, section:"summary", users:[], products:[], productImages:[], locations:[], discounts:[], stock:[], sales:[], selectedLocationId:"", salesLimit:200, unsubStock:null, unsubSales:null};
+  state = {root, profile, onLogout, section:"summary", users:[], products:[], productImages:[], locations:[], discounts:[], stock:[], sales:[], selectedLocationId:"", salesLimit:200, unsubStock:null, unsubSales:null, metrics:{filters:{period:"month",dateValue:currentMetricsValue("month"),locationId:"",sellerId:"",productId:"",discountId:""},sales:[],loaded:false,loading:false,error:"",requestId:0}};
   root.innerHTML = shell(profile);
   $("#admin-logout", root).addEventListener("click", onLogout);
   $$("[data-section]", root).forEach(button => button.addEventListener("click", () => switchSection(button.dataset.section)));
@@ -41,7 +42,7 @@ export async function renderAdmin(root, profile, onLogout) {
 function shell(profile) {
   return `<header class="app-header"><div class="logo">Flor Mia</div><select id="admin-location" aria-label="Ubicación activa"><option>Cargando…</option></select><div class="header-spacer"></div><div class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</div><div class="user-chip"><strong>${escapeHtml(profile.name)}</strong>Administrador</div><button id="admin-logout" class="btn btn-ghost btn-small">Salir</button></header>
   <div class="admin-layout"><nav class="side-nav" aria-label="Administración">
-    <button data-section="summary" class="active">Resumen</button><button data-section="locations">Ubicaciones</button><button data-section="products">Productos</button><button data-section="stock">Stock</button><button data-section="sellers">Vendedores</button><button data-section="discounts">Descuentos</button><button data-section="sales">Ventas</button><button data-section="deletedItems">Items Eliminados</button><button data-section="exports">Exportar</button><button data-section="help">Ayuda</button>
+    <button data-section="summary" class="active">Resumen</button><button data-section="metrics">Métricas</button><button data-section="locations">Ubicaciones</button><button data-section="products">Productos</button><button data-section="stock">Stock</button><button data-section="sellers">Vendedores</button><button data-section="discounts">Descuentos</button><button data-section="sales">Ventas</button><button data-section="deletedItems">Items Eliminados</button><button data-section="exports">Exportar</button><button data-section="help">Ayuda</button>
   </nav><main id="admin-content" class="page"><div class="empty">Cargando información…</div></main></div>`;
 }
 
@@ -67,7 +68,7 @@ function switchSection(section) {
 
 function renderSection() {
   if (!state) return;
-  const renderers = {summary:renderSummary, locations:renderLocations, products:renderProducts, stock:renderStock, sellers:renderSellers, discounts:renderDiscounts, sales:renderSales, deletedItems:renderDeletedItems, exports:renderExports, help:renderHelp};
+  const renderers = {summary:renderSummary, metrics:renderMetrics, locations:renderLocations, products:renderProducts, stock:renderStock, sellers:renderSellers, discounts:renderDiscounts, sales:renderSales, deletedItems:renderDeletedItems, exports:renderExports, help:renderHelp};
   renderers[state.section]?.();
 }
 
@@ -127,6 +128,74 @@ function renderSummary() {
 
 function rankList(rows, formatter) {
   return rows.length ? `<ol class="rank-list">${rows.slice(0,10).map(([name,value]) => `<li><span>${escapeHtml(name || "Sin nombre")}</span><strong>${formatter(value)}</strong></li>`).join("")}</ol>` : `<div class="empty">Todavía no hay datos</div>`;
+}
+
+function metricsDateInput(period,value=currentMetricsValue(period)){
+  const type=period==="day"?"date":period==="year"?"number":"month";
+  const limits=period==="year"?'min="2000" max="2200" step="1"':'';
+  return `<input id="metrics-date-value" type="${type}" ${limits} value="${escapeHtml(value)}" required>`;
+}
+
+function metricOptions(items,{emptyLabel,getName=item=>item.name}={}){
+  return `<option value="">${escapeHtml(emptyLabel||"Todos")}</option>${[...items].sort((a,b)=>String(getName(a)||"").localeCompare(String(getName(b)||""))).map(item=>`<option value="${escapeHtml(item.id)}">${escapeHtml(getName(item)||"Sin nombre")}${item.deleted===true?" · eliminada/o":item.active===false?" · inactiva/o":""}</option>`).join("")}`;
+}
+
+function lineChart(points){
+  if(!points.some(point=>point.total>0||point.sales>0))return `<div class="metrics-chart-empty">No hay ventas activas para graficar.</div>`;
+  const width=820,height=270,left=72,right=22,top=22,bottom=52,max=Math.max(...points.map(point=>point.total),1),plotWidth=width-left-right,plotHeight=height-top-bottom;
+  const coords=points.map((point,index)=>({x:left+(points.length===1?plotWidth/2:index*plotWidth/(points.length-1)),y:top+plotHeight-(point.total/max)*plotHeight,...point}));
+  const labelStep=Math.max(1,Math.ceil(points.length/8));
+  const grids=Array.from({length:5},(_,index)=>{const value=max*(4-index)/4,y=top+plotHeight*index/4;return `<line x1="${left}" y1="${y}" x2="${width-right}" y2="${y}"/><text x="${left-8}" y="${y+4}" text-anchor="end">${escapeHtml(money(value))}</text>`;}).join("");
+  return `<div class="metrics-chart-scroll"><svg class="metrics-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Evolución de ventas"><g class="chart-grid">${grids}</g><polyline class="chart-line" points="${coords.map(point=>`${point.x},${point.y}`).join(" ")}"/>${coords.map(point=>`<circle class="chart-point" cx="${point.x}" cy="${point.y}" r="4"><title>${escapeHtml(point.label)}: ${escapeHtml(money(point.total))} · ${point.sales} ventas</title></circle>`).join("")}${coords.filter((_,index)=>index%labelStep===0||index===coords.length-1).map(point=>`<text class="chart-axis-label" x="${point.x}" y="${height-18}" text-anchor="middle">${escapeHtml(point.label)}</text>`).join("")}</svg></div>`;
+}
+
+function columnChart(rows){
+  const data=rows.slice(0,10);if(!data.length||!data.some(row=>row.total>0))return `<div class="metrics-chart-empty">No hay montos por ubicación para comparar.</div>`;
+  const width=820,height=300,left=65,right=20,top=22,bottom=82,max=Math.max(...data.map(row=>row.total),1),plotWidth=width-left-right,plotHeight=height-top-bottom,slot=plotWidth/data.length,barWidth=Math.min(54,slot*.62);
+  return `<div class="metrics-chart-scroll"><svg class="metrics-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Monto vendido por ubicación"><line class="chart-base" x1="${left}" y1="${top+plotHeight}" x2="${width-right}" y2="${top+plotHeight}"/>${data.map((row,index)=>{const barHeight=row.total/max*plotHeight,x=left+index*slot+(slot-barWidth)/2,y=top+plotHeight-barHeight,label=String(row.name).length>17?`${String(row.name).slice(0,16)}…`:row.name;return `<rect class="chart-column" x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="5"><title>${escapeHtml(row.name)}: ${escapeHtml(money(row.total))}</title></rect><text class="chart-column-value" x="${x+barWidth/2}" y="${Math.max(14,y-6)}" text-anchor="middle">${escapeHtml(money(row.total))}</text><text class="chart-axis-label" x="${x+barWidth/2}" y="${top+plotHeight+20}" text-anchor="end" transform="rotate(-28 ${x+barWidth/2} ${top+plotHeight+20})">${escapeHtml(label)}</text>`;}).join("")}</svg></div>`;
+}
+
+function pieChart(rows){
+  let data=rows.filter(row=>row.total>0);if(!data.length)return `<div class="metrics-chart-empty">No hay formas de pago para graficar.</div>`;
+  if(data.length>5){const rest=data.slice(5).reduce((sum,row)=>sum+row.total,0);data=[...data.slice(0,5),{name:"Otros",total:rest}];}
+  const total=data.reduce((sum,row)=>sum+row.total,0),colors=["#315b43","#c89437","#2463a6","#b93838","#7b5aa6","#779488"];let current=0;
+  const stops=data.map((row,index)=>{const start=current;current+=row.total/total*100;return `${colors[index]} ${start}% ${current}%`;}).join(",");
+  return `<div class="metrics-pie-layout"><div class="metrics-pie" style="background:conic-gradient(${stops})" role="img" aria-label="Distribución por forma de pago"></div><div class="metrics-legend">${data.map((row,index)=>`<div><i style="background:${colors[index]}"></i><span>${escapeHtml(row.name)}</span><strong>${(row.total/total*100).toFixed(1)}%</strong><small>${money(row.total)}</small></div>`).join("")}</div></div>`;
+}
+
+function metricsTable(title,headers,rows,renderRow){
+  return `<section class="card metrics-table-card"><h3>${escapeHtml(title)}</h3>${rows.length?`<div class="table-wrap"><table class="responsive"><thead><tr>${headers.map(header=>`<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows.map(renderRow).join("")}</tbody></table></div>`:`<div class="empty">No hay ventas para los filtros seleccionados.</div>`}</section>`;
+}
+
+function metricsFilterDetails(filters){
+  const location=state.locations.find(item=>item.id===filters.locationId),seller=state.users.find(item=>item.id===filters.sellerId),product=state.products.find(item=>item.id===filters.productId),discount=state.discounts.find(item=>item.id===filters.discountId);
+  return {...filters,locationName:location?.name||"",sellerName:seller?.name||"",productName:product?.name||"",discountName:discount?.name||""};
+}
+
+function metricsResultsHtml(metrics,filters){
+  const productCard=filters.productId?`<div class="card metric"><strong>${money(metrics.selectedProductAmount)}</strong><span>Monto del producto filtrado (${metrics.selectedProductUnits} u.)</span></div>`:"";
+  const tables=`<div class="metrics-tables">${metricsTable("Detalle por ubicación",["Ubicación","Total","Ventas","Productos","Ticket promedio"],metrics.byLocation,row=>`<tr><td data-label="Ubicación">${escapeHtml(row.name)}</td><td data-label="Total">${money(row.total)}</td><td data-label="Ventas">${row.sales}</td><td data-label="Productos">${row.items}</td><td data-label="Ticket promedio">${money(row.ticket)}</td></tr>`)}${metricsTable("Detalle por vendedor",["Vendedor","Total","Ventas","Productos","Ticket promedio"],metrics.bySeller,row=>`<tr><td data-label="Vendedor">${escapeHtml(row.name)}</td><td data-label="Total">${money(row.total)}</td><td data-label="Ventas">${row.sales}</td><td data-label="Productos">${row.items}</td><td data-label="Ticket promedio">${money(row.ticket)}</td></tr>`)}${metricsTable("Ranking de productos",["Producto","Unidades","Monto vendido","Ventas"],metrics.byProduct,row=>`<tr><td data-label="Producto">${escapeHtml(row.name)}</td><td data-label="Unidades">${row.items}</td><td data-label="Monto vendido">${money(row.total)}</td><td data-label="Ventas">${row.sales}</td></tr>`)}${metricsTable("Descuentos aplicados",["Descuento","Veces usado","Total descontado","Ventas asociadas"],metrics.byDiscount,row=>`<tr><td data-label="Descuento">${escapeHtml(row.name)}</td><td data-label="Veces usado">${row.sales}</td><td data-label="Total descontado">${money(row.total)}</td><td data-label="Ventas asociadas">${money(row.salesTotal||0)}</td></tr>`)}</div>`;
+  return `${metrics.active.length||metrics.cancelled.length?"":`<div class="empty metrics-no-results">No hay ventas para los filtros seleccionados.</div>`}<div class="cards metrics-cards"><div class="card metric"><strong>${money(metrics.total)}</strong><span>Monto total vendido</span></div><div class="card metric"><strong>${metrics.salesCount}</strong><span>Ventas activas</span></div><div class="card metric"><strong>${money(metrics.ticket)}</strong><span>Ticket promedio</span></div><div class="card metric"><strong>${metrics.totalItems}</strong><span>Productos vendidos</span></div><div class="card metric"><strong>${money(metrics.discountTotal)}</strong><span>Descontado (${metrics.discountedSales} ventas)</span></div><div class="card metric"><strong>${metrics.cancelled.length}</strong><span>Ventas anuladas · ${money(metrics.cancelledTotal)}</span></div>${productCard}</div><div class="metrics-charts"><section class="card metrics-chart-wide"><h3>Evolución de ventas</h3><p class="muted">Monto vendido en el tiempo.</p>${lineChart(metrics.timeline)}</section><section class="card"><h3>Ventas por ubicación</h3><p class="muted">Comparación del monto total.</p>${columnChart(metrics.byLocation)}</section><section class="card"><h3>Formas de pago</h3><p class="muted">Distribución por montos cobrados.</p>${pieChart(metrics.byPayment)}</section></div>${tables}`;
+}
+
+async function loadMetricsSales(){
+  if(!state)return;
+  let range;try{range=buildMetricsDateRange(state.metrics.filters.period,state.metrics.filters.dateValue);}catch(error){state.metrics.error=error.message;renderMetrics();return;}
+  const metricsState=state.metrics,requestId=++metricsState.requestId;metricsState.loading=true;metricsState.error="";renderMetrics();
+  try{const sales=await listSalesByDateRange(range.start,range.end);if(state?.metrics.requestId===requestId){metricsState.sales=sales;metricsState.loaded=true;}}
+  catch(error){if(state?.metrics.requestId===requestId){metricsState.sales=[];metricsState.loaded=true;metricsState.error=`No se pudieron cargar las métricas: ${error.message}`;}}
+  finally{if(state?.metrics.requestId===requestId){metricsState.loading=false;if(state.section==="metrics")renderMetrics();}}
+}
+
+function renderMetrics(){
+  const root=$("#admin-content",state.root),filters=state.metrics.filters,range=buildMetricsDateRange(filters.period,filters.dateValue),details=metricsFilterDetails(filters),filtered=applyMetricsFilters(state.metrics.sales,details,range),metrics=calculateMetrics(filtered,range,details);
+  const sellers=state.users.filter(user=>user.role==="seller");
+  root.innerHTML=`<div class="page-head"><div><h1>Métricas</h1><p class="muted">Historial y análisis de ventas por fecha, ubicación, vendedor, producto y descuento.</p></div></div><section class="card metrics-filter-card"><div class="metrics-filters"><label>Período<select id="metrics-period"><option value="day" ${filters.period==="day"?"selected":""}>Día</option><option value="month" ${filters.period==="month"?"selected":""}>Mes</option><option value="year" ${filters.period==="year"?"selected":""}>Año</option></select></label><label>Fecha<span id="metrics-date-control">${metricsDateInput(filters.period,filters.dateValue)}</span></label><label>Ubicación<select id="metrics-location">${metricOptions(state.locations,{emptyLabel:"Todas las ubicaciones"})}</select></label><label>Vendedor<select id="metrics-seller">${metricOptions(sellers,{emptyLabel:"Todos los vendedores"})}</select></label><label>Producto<select id="metrics-product">${metricOptions(state.products,{emptyLabel:"Todos los productos"})}</select></label><label>Descuento<select id="metrics-discount"><option value="">Todos los descuentos</option><option value="__none">Sin descuento</option>${[...state.discounts].sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))).map(item=>`<option value="${escapeHtml(item.id)}">${escapeHtml(item.name||"Sin nombre")}${item.deleted===true?" · eliminado":item.active===false?" · inactivo":""}</option>`).join("")}</select></label></div><div class="metrics-filter-actions"><button id="metrics-clear" class="btn btn-ghost">Limpiar filtros</button><button id="metrics-apply" class="btn btn-primary">Aplicar filtros</button></div></section>${state.metrics.error?`<div class="seller-notice offline">${escapeHtml(state.metrics.error)}</div>`:""}${state.metrics.loading?`<div class="card empty">Cargando métricas…</div>`:metricsResultsHtml(metrics,details)}`;
+  $("#metrics-location",root).value=filters.locationId;$("#metrics-seller",root).value=filters.sellerId;$("#metrics-product",root).value=filters.productId;$("#metrics-discount",root).value=filters.discountId;
+  $("#metrics-period",root).onchange=event=>{$("#metrics-date-control",root).innerHTML=metricsDateInput(event.target.value,currentMetricsValue(event.target.value));};
+  $("#metrics-apply",root).onclick=()=>{const period=$("#metrics-period",root).value,dateValue=$("#metrics-date-value",root).value;try{buildMetricsDateRange(period,dateValue);state.metrics.filters={period,dateValue,locationId:$("#metrics-location",root).value,sellerId:$("#metrics-seller",root).value,productId:$("#metrics-product",root).value,discountId:$("#metrics-discount",root).value};state.metrics.loaded=false;loadMetricsSales();}catch(error){toast(error.message,"error");}};
+  $("#metrics-clear",root).onclick=()=>{state.metrics.filters={period:"month",dateValue:currentMetricsValue("month"),locationId:"",sellerId:"",productId:"",discountId:""};state.metrics.loaded=false;loadMetricsSales();};
+  if(!state.metrics.loaded&&!state.metrics.loading)queueMicrotask(loadMetricsSales);
 }
 
 function renderLocations() {
