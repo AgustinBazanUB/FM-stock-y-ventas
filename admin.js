@@ -10,7 +10,7 @@ import {recordNextKey} from "./keyboard.js";
 import {listProductImages} from "./image-catalog.js";
 import {saleDiscountList, storedDiscountTotal} from "./discounts.js";
 import {PAYMENT_LABELS as SALE_PAYMENT_LABELS, salePaymentParts, paymentsBreakdownText} from "./payments.js";
-import {currentMetricsValue, buildMetricsDateRange, applyMetricsFilters, calculateMetrics} from "./metrics.js";
+import {currentMetricsValue, buildMetricsDateRange, applyMetricsFilters, calculateMetrics, metricLocations, metricSellersForLocations} from "./metrics.js?v=17";
 
 let state = null;
 const PAYMENT_LABELS = {...SALE_PAYMENT_LABELS,unknown:"Sin forma de pago"};
@@ -23,7 +23,7 @@ export function destroyAdmin() {
 export async function renderAdmin(root, profile, onLogout) {
   if (state?.profile?.id === profile.id) return;
   destroyAdmin();
-  state = {root, profile, onLogout, section:"summary", users:[], products:[], productImages:[], locations:[], discounts:[], stock:[], sales:[], selectedLocationId:"", salesLimit:200, unsubStock:null, unsubSales:null, metrics:{filters:{period:"month",dateValue:currentMetricsValue("month"),locationId:"",sellerId:"",productId:"",discountId:""},sales:[],loaded:false,loading:false,error:"",requestId:0}};
+  state = {root, profile, onLogout, section:"summary", users:[], products:[], productImages:[], locations:[], discounts:[], stock:[], sales:[], selectedLocationId:"", salesLimit:200, unsubStock:null, unsubSales:null, metrics:{filters:{period:"month",dateValue:currentMetricsValue("month"),locationIds:[],sellerIds:[],productId:"",discountId:""},sales:[],loaded:false,loading:false,error:"",requestId:0}};
   root.innerHTML = shell(profile);
   $("#admin-logout", root).addEventListener("click", onLogout);
   $$("[data-section]", root).forEach(button => button.addEventListener("click", () => switchSection(button.dataset.section)));
@@ -140,6 +140,23 @@ function metricOptions(items,{emptyLabel,getName=item=>item.name}={}){
   return `<option value="">${escapeHtml(emptyLabel||"Todos")}</option>${[...items].sort((a,b)=>String(getName(a)||"").localeCompare(String(getName(b)||""))).map(item=>`<option value="${escapeHtml(item.id)}">${escapeHtml(getName(item)||"Sin nombre")}${item.deleted===true?" · eliminada/o":item.active===false?" · inactiva/o":""}</option>`).join("")}`;
 }
 
+function metricMultiPicker({id,label,allLabel,items,selectedIds=[],emptyText="No hay opciones disponibles.",itemLabel=item=>item.name}){
+  const selected=new Set(selectedIds),allSelected=!selected.size,summary=allSelected?allLabel:selected.size===1?itemLabel(items.find(item=>selected.has(item.id))||{}):`${selected.size} seleccionados`;
+  return `<div class="metrics-multi-field"><span class="metrics-field-label">${escapeHtml(label)}</span><details class="metrics-picker" id="${id}"><summary><span id="${id}-summary">${escapeHtml(summary)}</span><small>${allSelected?"Todas":"Selección múltiple"}</small></summary><div class="metrics-picker-menu"><label class="metrics-picker-option all"><input id="${id}-all" type="checkbox" ${allSelected?"checked":""} ${items.length?"":"disabled"}> <span>${escapeHtml(allLabel)}</span></label>${items.map(item=>`<label class="metrics-picker-option"><input type="checkbox" data-metric-option="${id}" value="${escapeHtml(item.id)}" ${selected.has(item.id)?"checked":""}> <span>${escapeHtml(itemLabel(item))}${item.active===false?' <small class="badge">Inactiva</small>':""}</span></label>`).join("")||`<p class="metrics-picker-empty">${escapeHtml(emptyText)}</p>`}</div></details></div>`;
+}
+
+function metricPickerValue(root,id){
+  if($(`#${id}-all`,root)?.checked)return [];
+  return $$(`[data-metric-option="${id}"]:checked`,root).map(input=>input.value);
+}
+
+function bindMetricPicker(root,id,items,onChange,itemLabel=item=>item.name){
+  const all=$(`#${id}-all`,root),options=$$(`[data-metric-option="${id}"]`,root),summary=$(`#${id}-summary`,root),hint=$(`#${id} summary small`,root);if(!all)return;
+  const update=()=>{const values=all.checked?[]:options.filter(input=>input.checked).map(input=>input.value);if(!values.length&&!all.checked)all.checked=true;const selected=all.checked?[]:values;summary.textContent=!selected.length?all.parentElement.textContent.trim():selected.length===1?itemLabel(items.find(item=>item.id===selected[0])||{}):`${selected.length} seleccionados`;if(hint)hint.textContent=selected.length?"Selección múltiple":"Todas";onChange?.(selected);};
+  all.onchange=()=>{if(all.checked)options.forEach(input=>input.checked=false);update();};
+  options.forEach(input=>input.onchange=()=>{if(input.checked)all.checked=false;if(!options.some(option=>option.checked))all.checked=true;update();});
+}
+
 function lineChart(points){
   if(!points.some(point=>point.total>0||point.sales>0))return `<div class="metrics-chart-empty">No hay ventas activas para graficar.</div>`;
   const width=820,height=270,left=72,right=22,top=22,bottom=52,max=Math.max(...points.map(point=>point.total),1),plotWidth=width-left-right,plotHeight=height-top-bottom;
@@ -167,18 +184,24 @@ function metricsTable(title,headers,rows,renderRow){
   return `<section class="card metrics-table-card"><h3>${escapeHtml(title)}</h3>${rows.length?`<div class="table-wrap"><table class="responsive"><thead><tr>${headers.map(header=>`<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows.map(renderRow).join("")}</tbody></table></div>`:`<div class="empty">No hay ventas para los filtros seleccionados.</div>`}</section>`;
 }
 
-function metricsFilterDetails(filters){
-  const location=state.locations.find(item=>item.id===filters.locationId),seller=state.users.find(item=>item.id===filters.sellerId),product=state.products.find(item=>item.id===filters.productId),discount=state.discounts.find(item=>item.id===filters.discountId);
-  return {...filters,locationName:location?.name||"",sellerName:seller?.name||"",productName:product?.name||"",discountName:discount?.name||""};
+function metricsFilterContext(filters){
+  const locations=metricLocations(state.locations),visibleIds=new Set(locations.map(item=>item.id));
+  const requestedLocations=Array.isArray(filters.locationIds)?filters.locationIds:filters.locationId?[filters.locationId]:[];
+  const locationSelection=requestedLocations.filter(id=>visibleIds.has(id)),locationIds=locationSelection.length?locationSelection:locations.map(item=>item.id);
+  const sellers=metricSellersForLocations(locations,state.users,state.metrics.sales,locationIds),sellerIdSet=new Set(sellers.map(item=>item.id));
+  const requestedSellers=Array.isArray(filters.sellerIds)?filters.sellerIds:filters.sellerId?[filters.sellerId]:[];
+  const sellerSelection=requestedSellers.filter(id=>sellerIdSet.has(id)),sellerIds=sellerSelection.length?sellerSelection:sellers.map(item=>item.id);
+  return {locations,locationSelection,locationIds,locationNames:locations.filter(item=>locationIds.includes(item.id)).map(item=>item.name),sellers,sellerSelection,sellerIds,sellerNames:sellers.filter(item=>sellerIds.includes(item.id)).map(item=>item.name)};
 }
 
-const metricEntityVisible=item=>item?.active===true&&item.deleted!==true;
+function metricsFilterDetails(filters,context){
+  const product=state.products.find(item=>item.id===filters.productId),discount=state.discounts.find(item=>item.id===filters.discountId);
+  return {...filters,locationIds:context.locationIds,locationNames:context.locationNames,sellerIds:context.sellerIds,sellerNames:context.sellerNames,productName:product?.name||"",discountName:discount?.name||""};
+}
 
 function hideUnavailableMetricRows(metrics){
-  const visible=(rows,items)=>rows.filter(row=>{const entity=items.find(item=>item.id===row.key||(row.key===row.name&&item.name===row.name));return !entity||metricEntityVisible(entity);});
+  const visible=(rows,items)=>rows.filter(row=>{const entity=items.find(item=>item.id===row.key||(row.key===row.name&&item.name===row.name));return !entity||(entity.active===true&&entity.deleted!==true);});
   return {...metrics,
-    byLocation:visible(metrics.byLocation,state.locations),
-    bySeller:visible(metrics.bySeller,state.users),
     byProduct:visible(metrics.byProduct,state.products),
     byDiscount:visible(metrics.byDiscount,state.discounts)
   };
@@ -201,14 +224,19 @@ async function loadMetricsSales(){
 
 function renderMetrics(){
   const root=$("#admin-content",state.root),filters=state.metrics.filters;
-  [["locationId",state.locations],["sellerId",state.users],["productId",state.products],["discountId",state.discounts]].forEach(([key,items])=>{if(items.some(item=>item.id===filters[key]&&!metricEntityVisible(item)))filters[key]="";});
-  const range=buildMetricsDateRange(filters.period,filters.dateValue),details=metricsFilterDetails(filters),filtered=applyMetricsFilters(state.metrics.sales,details,range),metrics=hideUnavailableMetricRows(calculateMetrics(filtered,range,details));
-  const locations=state.locations.filter(metricEntityVisible),sellers=state.users.filter(user=>user.role==="seller"&&metricEntityVisible(user)),products=state.products.filter(metricEntityVisible),discounts=state.discounts.filter(metricEntityVisible);
-  root.innerHTML=`<div class="page-head"><div><h1>Métricas</h1><p class="muted">Historial y análisis de ventas por fecha, ubicación, vendedor, producto y descuento.</p></div></div><section class="card metrics-filter-card"><div class="metrics-filters"><label>Período<select id="metrics-period"><option value="day" ${filters.period==="day"?"selected":""}>Día</option><option value="month" ${filters.period==="month"?"selected":""}>Mes</option><option value="year" ${filters.period==="year"?"selected":""}>Año</option></select></label><label>Fecha<span id="metrics-date-control">${metricsDateInput(filters.period,filters.dateValue)}</span></label><label>Ubicación<select id="metrics-location">${metricOptions(locations,{emptyLabel:"Todas las ubicaciones"})}</select></label><label>Vendedor<select id="metrics-seller">${metricOptions(sellers,{emptyLabel:"Todos los vendedores"})}</select></label><label>Producto<select id="metrics-product">${metricOptions(products,{emptyLabel:"Todos los productos"})}</select></label><label>Descuento<select id="metrics-discount"><option value="">Todos los descuentos</option><option value="__none">Sin descuento</option>${[...discounts].sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))).map(item=>`<option value="${escapeHtml(item.id)}">${escapeHtml(item.name||"Sin nombre")}</option>`).join("")}</select></label></div><div class="metrics-filter-actions"><button id="metrics-clear" class="btn btn-ghost">Limpiar filtros</button><button id="metrics-apply" class="btn btn-primary">Aplicar filtros</button></div></section>${state.metrics.error?`<div class="seller-notice offline">${escapeHtml(state.metrics.error)}</div>`:""}${state.metrics.loading?`<div class="card empty">Cargando métricas…</div>`:metricsResultsHtml(metrics,details)}`;
-  $("#metrics-location",root).value=filters.locationId;$("#metrics-seller",root).value=filters.sellerId;$("#metrics-product",root).value=filters.productId;$("#metrics-discount",root).value=filters.discountId;
+  const context=metricsFilterContext(filters);filters.locationIds=context.locationSelection;filters.sellerIds=context.sellerSelection;delete filters.locationId;delete filters.sellerId;
+  const range=buildMetricsDateRange(filters.period,filters.dateValue),details=metricsFilterDetails(filters,context),filtered=applyMetricsFilters(state.metrics.sales,details,range),metrics=hideUnavailableMetricRows(calculateMetrics(filtered,range,details));
+  const products=state.products.filter(item=>item.active===true&&item.deleted!==true),discounts=state.discounts.filter(item=>item.active===true&&item.deleted!==true);
+  const locationPicker=metricMultiPicker({id:"metrics-location",label:"Ubicaciones",allLabel:"Todas las ubicaciones",items:context.locations,selectedIds:context.locationSelection,emptyText:"No hay ubicaciones disponibles."});
+  const sellerPicker=metricMultiPicker({id:"metrics-seller",label:"Vendedores",allLabel:"Todos los vendedores",items:context.sellers,selectedIds:context.sellerSelection,emptyText:"No hay vendedores asignados a las ubicaciones seleccionadas."});
+  root.innerHTML=`<div class="page-head"><div><h1>Métricas</h1><p class="muted">Historial y análisis de ventas por fecha, ubicaciones, vendedores, producto y descuento.</p></div></div><section class="card metrics-filter-card"><div class="metrics-filters"><label>Período<select id="metrics-period"><option value="day" ${filters.period==="day"?"selected":""}>Día</option><option value="month" ${filters.period==="month"?"selected":""}>Mes</option><option value="year" ${filters.period==="year"?"selected":""}>Año</option></select></label><label>Fecha<span id="metrics-date-control">${metricsDateInput(filters.period,filters.dateValue)}</span></label>${locationPicker}<div id="metrics-seller-container">${sellerPicker}</div><label>Producto<select id="metrics-product">${metricOptions(products,{emptyLabel:"Todos los productos"})}</select></label><label>Descuento<select id="metrics-discount"><option value="">Todos los descuentos</option><option value="__none">Sin descuento</option>${[...discounts].sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""))).map(item=>`<option value="${escapeHtml(item.id)}">${escapeHtml(item.name||"Sin nombre")}</option>`).join("")}</select></label></div><div class="metrics-filter-actions"><button id="metrics-clear" class="btn btn-ghost">Limpiar filtros</button><button id="metrics-apply" class="btn btn-primary">Aplicar filtros</button></div></section>${state.metrics.error?`<div class="seller-notice offline">${escapeHtml(state.metrics.error)}</div>`:""}${state.metrics.loading?`<div class="card empty">Cargando métricas…</div>`:metricsResultsHtml(metrics,details)}`;
+  $("#metrics-product",root).value=filters.productId;$("#metrics-discount",root).value=filters.discountId;
+  const bindSellerPicker=sellers=>bindMetricPicker(root,"metrics-seller",sellers);
+  bindSellerPicker(context.sellers);
+  bindMetricPicker(root,"metrics-location",context.locations,locationSelection=>{const locationIds=locationSelection.length?locationSelection:context.locations.map(item=>item.id),sellers=metricSellersForLocations(context.locations,state.users,state.metrics.sales,locationIds),previous=metricPickerValue(root,"metrics-seller"),valid=previous.filter(id=>sellers.some(seller=>seller.id===id));$("#metrics-seller-container",root).innerHTML=metricMultiPicker({id:"metrics-seller",label:"Vendedores",allLabel:"Todos los vendedores",items:sellers,selectedIds:valid,emptyText:"No hay vendedores asignados a las ubicaciones seleccionadas."});bindSellerPicker(sellers);});
   $("#metrics-period",root).onchange=event=>{$("#metrics-date-control",root).innerHTML=metricsDateInput(event.target.value,currentMetricsValue(event.target.value));};
-  $("#metrics-apply",root).onclick=()=>{const period=$("#metrics-period",root).value,dateValue=$("#metrics-date-value",root).value;try{buildMetricsDateRange(period,dateValue);state.metrics.filters={period,dateValue,locationId:$("#metrics-location",root).value,sellerId:$("#metrics-seller",root).value,productId:$("#metrics-product",root).value,discountId:$("#metrics-discount",root).value};state.metrics.loaded=false;loadMetricsSales();}catch(error){toast(error.message,"error");}};
-  $("#metrics-clear",root).onclick=()=>{state.metrics.filters={period:"month",dateValue:currentMetricsValue("month"),locationId:"",sellerId:"",productId:"",discountId:""};state.metrics.loaded=false;loadMetricsSales();};
+  $("#metrics-apply",root).onclick=()=>{const period=$("#metrics-period",root).value,dateValue=$("#metrics-date-value",root).value;try{buildMetricsDateRange(period,dateValue);state.metrics.filters={period,dateValue,locationIds:metricPickerValue(root,"metrics-location"),sellerIds:metricPickerValue(root,"metrics-seller"),productId:$("#metrics-product",root).value,discountId:$("#metrics-discount",root).value};state.metrics.loaded=false;loadMetricsSales();}catch(error){toast(error.message,"error");}};
+  $("#metrics-clear",root).onclick=()=>{state.metrics.filters={period:"month",dateValue:currentMetricsValue("month"),locationIds:[],sellerIds:[],productId:"",discountId:""};state.metrics.loaded=false;loadMetricsSales();};
   if(!state.metrics.loaded&&!state.metrics.loading)queueMicrotask(loadMetricsSales);
 }
 

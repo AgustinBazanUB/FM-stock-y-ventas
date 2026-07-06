@@ -33,10 +33,24 @@ export function isActiveSale(sale) {
 const itemMatches=(item,id,name)=>!id||item?.productId===id||(!item?.productId&&name&&item?.name===name);
 const discountMatches=(sale,id,name)=>saleDiscountList(sale).some(discount=>(discount.discountId||discount.id)===id||(!(discount.discountId||discount.id)&&name&&discount.name===name));
 
+export const metricLocations = locations => (Array.isArray(locations)?locations:[]).filter(location=>location?.deleted!==true);
+
+export function metricSellersForLocations(locations, users, sales, selectedLocationIds) {
+  const locationIds=new Set(selectedLocationIds||[]),selectedLocations=metricLocations(locations).filter(location=>locationIds.has(location.id));
+  const locationNames=new Set(selectedLocations.map(location=>location.name).filter(Boolean));
+  const sellers=(Array.isArray(users)?users:[]).filter(user=>user?.role==="seller"&&user.deleted!==true),sellerIds=new Set();
+  selectedLocations.forEach(location=>(location.assignedSellerIds||[]).forEach(id=>sellerIds.add(id)));
+  sellers.forEach(seller=>{if((seller.allowedLocationIds||[]).some(id=>locationIds.has(id)))sellerIds.add(seller.id);});
+  if(!sellerIds.size)(Array.isArray(sales)?sales:[]).forEach(sale=>{if((locationIds.has(sale.locationId)||(!sale.locationId&&locationNames.has(sale.locationName)))&&sale.sellerId)sellerIds.add(sale.sellerId);});
+  return sellers.filter(seller=>sellerIds.has(seller.id)).sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
+}
+
 export function applyMetricsFilters(sales, filters, range) {
   return (Array.isArray(sales)?sales:[]).filter(sale=>{
     const date=saleDate(sale);
     if(!date||date<range.start||date>=range.end)return false;
+    if(Array.isArray(filters.locationIds)&&!filters.locationIds.includes(sale.locationId)&&!(!sale.locationId&&(filters.locationNames||[]).includes(sale.locationName)))return false;
+    if(Array.isArray(filters.sellerIds)&&!filters.sellerIds.includes(sale.sellerId)&&!(!sale.sellerId&&(filters.sellerNames||[]).includes(sale.sellerName)))return false;
     if(filters.locationId&&sale.locationId!==filters.locationId&&sale.locationName!==filters.locationName)return false;
     if(filters.sellerId&&sale.sellerId!==filters.sellerId&&sale.sellerName!==filters.sellerName)return false;
     if(filters.productId&&!(sale.items||[]).some(item=>itemMatches(item,filters.productId,filters.productName)))return false;
