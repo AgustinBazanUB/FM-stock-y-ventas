@@ -73,6 +73,7 @@ function renderSection() {
 }
 
 const activeLocations=()=>state.locations.filter(item=>item.active===true&&item.deleted!==true);
+const visibleLocations=()=>state.locations.filter(item=>item.deleted!==true);
 const deletedLocations=()=>state.locations.filter(item=>item.deleted===true);
 const activeProducts=()=>state.products.filter(item=>item.active===true&&item.deleted!==true);
 const deletedProducts=()=>state.products.filter(item=>item.deleted===true);
@@ -242,9 +243,9 @@ function renderMetrics(){
 
 function renderLocations() {
   const sellers = activeSellers();
-  const locations = activeLocations();
+  const locations = visibleLocations();
   $("#admin-content", state.root).innerHTML = `<div class="page-head"><h1>Ubicaciones y eventos</h1><div class="actions"><button class="btn btn-primary" id="new-location">+ Nueva ubicación</button></div></div>
-  <div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Código</th><th>Fechas</th><th>Vendedores</th><th>Estado</th><th></th></tr></thead><tbody>${locations.map(location => `<tr><td data-label="Nombre">${escapeHtml(location.name)}</td><td data-label="Código">${escapeHtml(location.codePrefix)}</td><td data-label="Fechas">${escapeHtml(location.startDate||"—")} – ${escapeHtml(location.endDate||"—")}</td><td data-label="Vendedores">${(location.assignedSellerIds||[]).map(id=>escapeHtml(sellers.find(s=>s.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado"><span class="badge ok">Activa</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-location="${location.id}">Editar</button><button class="btn btn-ghost btn-small" data-sales-location="${location.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-location="${location.id}">Eliminar ubicación</button></div></td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">Creá la primera ubicación para empezar</div></td></tr>`}</tbody></table></div>`;
+  <div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Código</th><th>Fechas</th><th>Vendedores</th><th>Estado</th><th></th></tr></thead><tbody>${locations.map(location => `<tr><td data-label="Nombre">${escapeHtml(location.name)}</td><td data-label="Código">${escapeHtml(location.codePrefix)}</td><td data-label="Fechas">${escapeHtml(location.startDate||"—")} – ${escapeHtml(location.endDate||"—")}</td><td data-label="Vendedores">${(location.assignedSellerIds||[]).map(id=>escapeHtml(sellers.find(s=>s.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado"><span class="badge ${location.active===false?"":"ok"}">${location.active===false?"Inactiva":"Activa"}</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-location="${location.id}">Editar</button><button class="btn btn-ghost btn-small" data-sales-location="${location.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-location="${location.id}">Eliminar ubicación</button></div></td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">Creá la primera ubicación para empezar</div></td></tr>`}</tbody></table></div>`;
   $("#new-location").onclick = () => locationForm();
   $$('[data-edit-location]').forEach(button => button.onclick = () => locationForm(state.locations.find(item => item.id === button.dataset.editLocation)));
   $$('[data-sales-location]').forEach(button => button.onclick = () => { state.selectedLocationId=button.dataset.salesLocation; state.salesLimit=200; renderLocationSelector(); subscribeSelected(); switchSection("sales"); });

@@ -1,7 +1,7 @@
-const CACHE = "flor-mia-shell-v17";
+const CACHE = "flor-mia-shell-v18";
 const SHELL = [
-  "/", "/index.html", "/styles.css?v=17", "/firebase-config.js", "/app.js?v=17",
-  "/auth.js", "/admin.js?v=17", "/seller.js", "/keyboard.js", "/utils.js", "/discounts.js", "/payments.js", "/metrics.js?v=17", "/image-catalog.js",
+  "/", "/index.html", "/styles.css?v=18", "/firebase-config.js", "/app.js?v=18",
+  "/auth.js", "/admin.js?v=18", "/seller.js", "/keyboard.js", "/utils.js", "/discounts.js", "/payments.js", "/metrics.js?v=17", "/image-catalog.js",
   "/firebase-service.js", "/offline-sales.js", "/manifest.webmanifest", "/assets/icons/icon.svg", "/assets/img/placeholder-producto.png", "/assets/products/catalog.json",
   "/assets/products/botella-500cc-blend.webp", "/assets/products/botella-500cc-blend-thumb.webp"
 ];

@@ -1,5 +1,5 @@
 import {watchSession, submitLogin, logout} from "./auth.js";
-import {renderAdmin, destroyAdmin} from "./admin.js?v=17";
+import {renderAdmin, destroyAdmin} from "./admin.js?v=18";
 import {renderSeller, destroySeller} from "./seller.js";
 import {$, toast, setBusy, updateConnectionStatus, handleImageError} from "./utils.js";
 
