@@ -3,7 +3,7 @@ import {
   saveUser, createSellerAccount, syncSellerAssignments, configureStock, addStock, subscribeLocationStock,
   subscribeLocationSales, deleteSaleTransaction, restoreSaleTransaction, listSellerSales, reauthenticateAdmin, deleteLocationLogical,
   restoreLocation, deleteProductLogical, restoreProduct, deleteDiscountLogical, restoreDiscount,
-  deleteLocationStock, deleteSellerLogical, listSalesByDateRange
+  deleteLocationStock, deleteSellerLogical, listSalesByDateRange, pauseLocation
 } from "./firebase-service.js";
 import {$, $$, escapeHtml, money, dateTime, dateOnly, timeOnly, toast, openModal, confirmDialog, setBusy, formDataObject, imageOrPlaceholder, downloadCsv} from "./utils.js";
 import {recordNextKey} from "./keyboard.js";
@@ -11,6 +11,7 @@ import {listProductImages} from "./image-catalog.js";
 import {saleDiscountList, storedDiscountTotal} from "./discounts.js";
 import {PAYMENT_LABELS as SALE_PAYMENT_LABELS, salePaymentParts, paymentsBreakdownText} from "./payments.js";
 import {currentMetricsValue, buildMetricsDateRange, applyMetricsFilters, calculateMetrics, metricLocations, metricSellersForLocations} from "./metrics.js?v=17";
+import {addDays, isLocationActiveNow, localDatePart, localDateTimeToDate, locationActivity, toLocalDateTimeInput} from "./locations.js";
 
 let state = null;
 const PAYMENT_LABELS = {...SALE_PAYMENT_LABELS,unknown:"Sin forma de pago"};
@@ -48,8 +49,10 @@ function shell(profile) {
 
 function renderLocationSelector() {
   const select = $("#admin-location", state.root);
+  const selected=state.locations.find(location=>location.id===state.selectedLocationId&&location.deleted!==true);
   const locations=activeLocations();
-  select.innerHTML = locations.length ? locations.map(location => `<option value="${location.id}" ${location.id === state.selectedLocationId ? "selected" : ""}>${escapeHtml(location.name)}</option>`).join("") : `<option value="">Sin ubicaciones</option>`;
+  const options=selected&&!locations.some(location=>location.id===selected.id)?[selected,...locations]:locations;
+  select.innerHTML = options.length ? options.map(location => `<option value="${location.id}" ${location.id === state.selectedLocationId ? "selected" : ""}>${escapeHtml(location.name)}${isLocationActiveNow(location)?"":" · inactiva"}</option>`).join("") : `<option value="">Sin ubicaciones</option>`;
   select.onchange = () => { state.selectedLocationId = select.value; state.salesLimit=200; subscribeSelected(); renderSection(); };
 }
 
@@ -72,7 +75,7 @@ function renderSection() {
   renderers[state.section]?.();
 }
 
-const activeLocations=()=>state.locations.filter(item=>item.active===true&&item.deleted!==true);
+const activeLocations=()=>state.locations.filter(item=>isLocationActiveNow(item)&&item.deleted!==true);
 const visibleLocations=()=>state.locations.filter(item=>item.deleted!==true);
 const deletedLocations=()=>state.locations.filter(item=>item.deleted===true);
 const activeProducts=()=>state.products.filter(item=>item.active===true&&item.deleted!==true);
@@ -96,6 +99,47 @@ function alertHtml() {
 }
 
 function currentLocation() { return state.locations.find(location => location.id === state.selectedLocationId); }
+
+function locationDateRange(location) {
+  const activity = locationActivity(location);
+  return `${dateTime(activity.startAt)} – ${dateTime(activity.endAt)}`;
+}
+
+function locationStatusBadge(location) {
+  const activity = locationActivity(location);
+  const detail = activity.reason === "paused" ? ` hasta ${dateTime(activity.manualInactiveUntil)}` : "";
+  return `<span class="badge ${activity.className}">${escapeHtml(activity.label)}${escapeHtml(detail)}</span>`;
+}
+
+function locationPeriodChanged(location, startDateTime, endDateTime) {
+  return String(location.startDateTime || toLocalDateTimeInput(location.scheduleStartAt || location.startDate, "start")) !== String(startDateTime || "")
+    || String(location.endDateTime || toLocalDateTimeInput(location.scheduleEndAt || location.endDate, "end")) !== String(endDateTime || "");
+}
+
+function locationSchedulePayload(location, data, source = "form") {
+  const startDateTime = data.startDateTime || "";
+  const endDateTime = data.endDateTime || "";
+  const startAt = localDateTimeToDate(startDateTime);
+  const endAt = localDateTimeToDate(endDateTime);
+  if(startAt&&endAt&&endAt<startAt)throw new Error("La fecha final no puede ser anterior a la inicial");
+  const hasSchedule = Boolean(startDateTime || endDateTime);
+  const payload = {
+    startDate:localDatePart(startDateTime),
+    endDate:localDatePart(endDateTime),
+    startDateTime,
+    endDateTime,
+    scheduleStartAt:startAt || null,
+    scheduleEndAt:endAt || null,
+    autoActivityManaged:hasSchedule
+  };
+  const periods = Array.isArray(location.activePeriods)?location.activePeriods:[];
+  const periodAlreadySaved = periods.some(period => period?.startDateTime === startDateTime && period?.endDateTime === endDateTime);
+  if(hasSchedule && (locationPeriodChanged(location,startDateTime,endDateTime) || !periodAlreadySaved)){
+    const period = {startAt:startAt || null,endAt:endAt || null,startDateTime,endDateTime,source,createdAt:new Date()};
+    payload.activePeriods=[...periods,period];
+  }
+  return payload;
+}
 
 function metrics() {
   const active = state.sales.filter(sale => sale.status === "active");
@@ -245,11 +289,27 @@ function renderLocations() {
   const sellers = activeSellers();
   const locations = visibleLocations();
   $("#admin-content", state.root).innerHTML = `<div class="page-head"><h1>Ubicaciones y eventos</h1><div class="actions"><button class="btn btn-primary" id="new-location">+ Nueva ubicación</button></div></div>
-  <div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Código</th><th>Fechas</th><th>Vendedores</th><th>Estado</th><th></th></tr></thead><tbody>${locations.map(location => `<tr><td data-label="Nombre">${escapeHtml(location.name)}</td><td data-label="Código">${escapeHtml(location.codePrefix)}</td><td data-label="Fechas">${escapeHtml(location.startDate||"—")} – ${escapeHtml(location.endDate||"—")}</td><td data-label="Vendedores">${(location.assignedSellerIds||[]).map(id=>escapeHtml(sellers.find(s=>s.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado"><span class="badge ${location.active===false?"":"ok"}">${location.active===false?"Inactiva":"Activa"}</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-location="${location.id}">Editar</button><button class="btn btn-ghost btn-small" data-sales-location="${location.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-location="${location.id}">Eliminar ubicación</button></div></td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">Creá la primera ubicación para empezar</div></td></tr>`}</tbody></table></div>`;
+  <div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Código</th><th>Fechas activas</th><th>Vendedores</th><th>Estado</th><th></th></tr></thead><tbody>${locations.map(location => {const activity=locationActivity(location),canPause=activity.active,canReactivate=!activity.active;return `<tr><td data-label="Nombre">${escapeHtml(location.name)}</td><td data-label="Código">${escapeHtml(location.codePrefix)}</td><td data-label="Fechas activas">${escapeHtml(locationDateRange(location))}</td><td data-label="Vendedores">${(location.assignedSellerIds||[]).map(id=>escapeHtml(sellers.find(s=>s.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado">${locationStatusBadge(location)}</td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-location="${location.id}">Editar</button>${canPause?`<button class="btn btn-ghost btn-small" data-pause-location="${location.id}">Pausar</button>`:""}${canReactivate?`<button class="btn btn-primary btn-small" data-reactivate-location="${location.id}">Reactivar ubicación</button>`:""}<button class="btn btn-ghost btn-small" data-sales-location="${location.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-location="${location.id}">Eliminar ubicación</button></div></td></tr>`;}).join("") || `<tr><td colspan="6"><div class="empty">Creá la primera ubicación para empezar</div></td></tr>`}</tbody></table></div>`;
   $("#new-location").onclick = () => locationForm();
   $$('[data-edit-location]').forEach(button => button.onclick = () => locationForm(state.locations.find(item => item.id === button.dataset.editLocation)));
+  $$('[data-pause-location]').forEach(button => button.onclick = () => pauseLocationForm(locations.find(item => item.id === button.dataset.pauseLocation)));
+  $$('[data-reactivate-location]').forEach(button => button.onclick = () => reactivateLocationForm(locations.find(item => item.id === button.dataset.reactivateLocation)));
   $$('[data-sales-location]').forEach(button => button.onclick = () => { state.selectedLocationId=button.dataset.salesLocation; state.salesLimit=200; renderLocationSelector(); subscribeSelected(); switchSection("sales"); });
   $$('[data-delete-location]').forEach(button=>button.onclick=()=>deleteLocationForm(locations.find(item=>item.id===button.dataset.deleteLocation)));
+}
+
+function pauseLocationForm(location){
+  const modal=openModal({title:"Pausar ubicación",content:`<p><strong>${escapeHtml(location.name)}</strong> quedará inactiva aunque sus fechas correspondan al día actual.</p><form id="pause-location-form"><label>Días inactiva<input name="days" type="number" min="1" step="1" inputmode="numeric" required value="1"><span class="form-hint">Al cumplirse ese plazo, se volverá a activar automáticamente si todavía está dentro de sus fechas.</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-secondary">Pausar ubicación</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;
+  $("#pause-location-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;const data=formDataObject(event.currentTarget);const days=Number(data.days);if(!Number.isInteger(days)||days<1)return toast("Ingresá una cantidad de días válida","error");setBusy(button,true,"Pausando…");try{await pauseLocation(location.id,{days,user:state.profile});state.locations=await listLocations();ensureSelectedLocation();modal.close();renderLocations();toast("Ubicación pausada","success");}catch(error){toast(error.message,"error");setBusy(button,false);}};
+}
+
+function reactivateLocationForm(location){
+  const nowInput=toLocalDateTimeInput(new Date());
+  const defaultEnd=toLocalDateTimeInput(addDays(new Date(),1),"end");
+  const modal=openModal({title:"Reactivar ubicación",content:`<p>Definí las nuevas fechas activas de <strong>${escapeHtml(location.name)}</strong>. Este período quedará guardado para futuras métricas.</p><form id="reactivate-location-form"><div class="form-grid"><label>Inicio<input name="startDateTime" type="datetime-local" required value="${escapeHtml(nowInput)}"></label><label>Fin<input name="endDateTime" type="datetime-local" required value="${escapeHtml(defaultEnd)}"></label></div><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Reactivar ubicación</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;
+  $("#reactivate-location-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true,"Reactivando…");try{const data=formDataObject(event.currentTarget);const schedule=locationSchedulePayload(location,data,"reactivation");await saveLocation(location.id,{...schedule,active:true,manualInactiveUntil:null,manualInactiveUntilDateTime:"",manualInactiveDays:null,reactivatedAt:new Date(),reactivatedBy:state.profile.id,reactivatedByName:state.profile.name||"Administrador"});state.locations=await listLocations();ensureSelectedLocation();modal.close();renderLocations();toast("Ubicación reactivada","success");}catch(error){toast(error.message,"error");setBusy(button,false);}};
 }
 
 function deleteLocationForm(location){
@@ -262,12 +322,23 @@ function renderDeletedLocations(){const rows=deletedLocations();$("#admin-conten
 
 function locationForm(location = {}) {
   const sellers = activeSellers();
-  const modal = openModal({title:location.id ? "Editar ubicación" : "Nueva ubicación", content:`<form id="location-form"><div class="form-grid"><label>Nombre<input name="name" required value="${escapeHtml(location.name||"")}"></label><label>Código corto<input name="codePrefix" required maxlength="8" value="${escapeHtml(location.codePrefix||"")}" placeholder="FCOL"></label><label>Fecha de inicio<input name="startDate" type="date" value="${escapeHtml(location.startDate||"")}"></label><label>Fecha de fin<input name="endDate" type="date" value="${escapeHtml(location.endDate||"")}"></label><label class="span-2">Vendedores asignados<div class="check-list">${sellers.map(seller=>`<label><input type="checkbox" name="seller" value="${seller.id}" ${(location.assignedSellerIds||[]).includes(seller.id)?"checked":""}> ${escapeHtml(seller.name)}</label>`).join("")||"No hay vendedores creados"}</div></label><label class="span-2"><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${location.active!==false?"checked":""}> Ubicación activa</span></label></div><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
+  const startValue = toLocalDateTimeInput(location.scheduleStartAt || location.startDateTime || location.startDate, "start");
+  const endValue = toLocalDateTimeInput(location.scheduleEndAt || location.endDateTime || location.endDate, "end");
+  const enabledByAdmin = location.active !== false || (location.manualInactiveUntil && locationActivity(location).reason !== "paused");
+  const modal = openModal({title:location.id ? "Editar ubicación" : "Nueva ubicación", content:`<form id="location-form"><div class="form-grid"><label>Nombre<input name="name" required value="${escapeHtml(location.name||"")}"></label><label>Código corto<input name="codePrefix" required maxlength="8" value="${escapeHtml(location.codePrefix||"")}" placeholder="FCOL"></label><label>Inicio activo<input name="startDateTime" type="datetime-local" value="${escapeHtml(startValue)}"><span class="form-hint">Si la fecha actual queda dentro del rango, se activa sola.</span></label><label>Fin activo<input name="endDateTime" type="datetime-local" value="${escapeHtml(endValue)}"><span class="form-hint">Cuando pasa esta fecha, queda inactiva automáticamente.</span></label><label class="span-2">Vendedores asignados<div class="check-list">${sellers.map(seller=>`<label><input type="checkbox" name="seller" value="${seller.id}" ${(location.assignedSellerIds||[]).includes(seller.id)?"checked":""}> ${escapeHtml(seller.name)}</label>`).join("")||"No hay vendedores creados"}</div></label><label class="span-2"><span><input id="location-active" style="width:auto;min-height:auto" type="checkbox" name="active" ${enabledByAdmin?"checked":""}> Ubicación habilitada</span><span class="form-hint">Si la destildás, indicá cuántos días quedará inactiva.</span></label><label class="span-2" id="manual-inactive-days-wrap" hidden>Días inactiva<input name="manualInactiveDays" type="number" min="1" step="1" inputmode="numeric" value="1"></label></div><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
   $(".modal-cancel",modal.root).onclick=modal.close;
+  const activeCheckbox=$("#location-active",modal.root),daysWrap=$("#manual-inactive-days-wrap",modal.root);
+  const toggleDays=()=>{daysWrap.hidden=activeCheckbox.checked;};
+  activeCheckbox.onchange=toggleDays;toggleDays();
   $("#location-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{
-    const data=formDataObject(event.currentTarget); if(data.startDate&&data.endDate&&data.endDate<data.startDate)throw new Error("La fecha final no puede ser anterior a la inicial");
+    const data=formDataObject(event.currentTarget);
     const assignedSellerIds=$$('input[name=seller]:checked',event.currentTarget).map(input=>input.value);
-    const id=await saveLocation(location.id,{name:data.name.trim(),codePrefix:data.codePrefix.trim().toUpperCase(),startDate:data.startDate||"",endDate:data.endDate||"",active:Boolean(data.active),assignedSellerIds});
+    const schedule=locationSchedulePayload(location,data);
+    const enabled=Boolean(data.active);
+    const manualDays=Number(data.manualInactiveDays||0);
+    const manualInactiveUntil=!enabled?addDays(new Date(),manualDays):null;
+    if(!enabled&&(!Number.isInteger(manualDays)||manualDays<1))throw new Error("Indicá cuántos días quedará inactiva la ubicación");
+    const id=await saveLocation(location.id,{name:data.name.trim(),codePrefix:data.codePrefix.trim().toUpperCase(),...schedule,active:enabled,manualInactiveUntil,manualInactiveUntilDateTime:manualInactiveUntil?toLocalDateTimeInput(manualInactiveUntil):"",manualInactiveDays:manualInactiveUntil?manualDays:null,manualInactiveAt:manualInactiveUntil?new Date():null,assignedSellerIds});
     for(const seller of sellers){const ids=new Set(seller.allowedLocationIds||[]);assignedSellerIds.includes(seller.id)?ids.add(id):ids.delete(id);await saveUser(seller.id,{allowedLocationIds:[...ids]});seller.allowedLocationIds=[...ids];}
     state.locations=await listLocations();state.selectedLocationId ||= id;renderLocationSelector();subscribeSelected();modal.close();renderLocations();toast("Ubicación guardada","success");
   }catch(error){toast(error.message,"error");setBusy(button,false);}};
@@ -342,13 +413,13 @@ function stockAddForm(item) {
 
 function renderSellers() {
   const sellers=activeSellers();
-  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Vendedores</h1><div class="actions"><button class="btn btn-primary" id="new-seller">+ Nuevo vendedor</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Email</th><th>Ubicaciones</th><th>Estado</th><th></th></tr></thead><tbody>${sellers.map(seller=>`<tr><td data-label="Nombre">${escapeHtml(seller.name)}</td><td data-label="Email">${escapeHtml(seller.email)}</td><td data-label="Ubicaciones">${(seller.allowedLocationIds||[]).map(id=>escapeHtml(activeLocations().find(l=>l.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-seller="${seller.id}">Editar</button><button class="btn btn-ghost btn-small" data-view-seller="${seller.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-seller="${seller.id}">Eliminar vendedor</button></div></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay vendedores activos</div></td></tr>`}</tbody></table></div>`;
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Vendedores</h1><div class="actions"><button class="btn btn-primary" id="new-seller">+ Nuevo vendedor</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Email</th><th>Ubicaciones</th><th>Estado</th><th></th></tr></thead><tbody>${sellers.map(seller=>`<tr><td data-label="Nombre">${escapeHtml(seller.name)}</td><td data-label="Email">${escapeHtml(seller.email)}</td><td data-label="Ubicaciones">${(seller.allowedLocationIds||[]).map(id=>{const location=visibleLocations().find(l=>l.id===id);return escapeHtml(location?`${location.name}${isLocationActiveNow(location)?"":" (inactiva)"}`:"?");}).join(", ")||"—"}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-seller="${seller.id}">Editar</button><button class="btn btn-ghost btn-small" data-view-seller="${seller.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-seller="${seller.id}">Eliminar vendedor</button></div></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay vendedores activos</div></td></tr>`}</tbody></table></div>`;
   $("#new-seller").onclick=()=>sellerForm();$$('[data-edit-seller]').forEach(button=>button.onclick=()=>sellerForm(sellers.find(item=>item.id===button.dataset.editSeller)));$$('[data-view-seller]').forEach(button=>button.onclick=()=>sellerSales(button.dataset.viewSeller));$$('[data-delete-seller]').forEach(button=>button.onclick=async()=>{const seller=sellers.find(item=>item.id===button.dataset.deleteSeller);if(!await confirmDialog("¿Querés eliminar este vendedor?"))return;setBusy(button,true,"Eliminando…");try{await deleteSellerLogical(seller.id,state.profile);[state.users,state.locations]=await Promise.all([listUsers(),listLocations()]);renderSellers();toast("Vendedor eliminado y accesos retirados","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
 }
 
 function sellerForm(seller={}) {
-  const locations=activeLocations();
-  const modal=openModal({title:seller.id?"Editar vendedor":"Nuevo vendedor",content:`<form id="seller-form"><label>Nombre<input name="name" required value="${escapeHtml(seller.name||"")}"></label><label>Email<input name="email" type="email" required value="${escapeHtml(seller.email||"")}" ${seller.id?"disabled":""}></label>${seller.id?"":`<label>Contraseña temporal<input name="password" type="password" minlength="6" required><span class="form-hint">El vendedor la usará para su primer ingreso.</span></label>`}<label>Ubicaciones<div class="check-list">${locations.map(location=>`<label><input type="checkbox" name="location" value="${location.id}" ${(seller.allowedLocationIds||[]).includes(location.id)?"checked":""}> ${escapeHtml(location.name)}</label>`).join("")||"Primero creá una ubicación"}</div></label><label><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${seller.active!==false?"checked":""}> Usuario activo</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
+  const locations=visibleLocations();
+  const modal=openModal({title:seller.id?"Editar vendedor":"Nuevo vendedor",content:`<form id="seller-form"><label>Nombre<input name="name" required value="${escapeHtml(seller.name||"")}"></label><label>Email<input name="email" type="email" required value="${escapeHtml(seller.email||"")}" ${seller.id?"disabled":""}></label>${seller.id?"":`<label>Contraseña temporal<input name="password" type="password" minlength="6" required><span class="form-hint">El vendedor la usará para su primer ingreso.</span></label>`}<label>Ubicaciones<div class="check-list">${locations.map(location=>`<label><input type="checkbox" name="location" value="${location.id}" ${(seller.allowedLocationIds||[]).includes(location.id)?"checked":""}> ${escapeHtml(location.name)}${isLocationActiveNow(location)?"":" · inactiva"}</label>`).join("")||"Primero creá una ubicación"}</div></label><label><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${seller.active!==false?"checked":""}> Usuario activo</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
   $(".modal-cancel",modal.root).onclick=modal.close;$("#seller-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{const data=formDataObject(event.currentTarget);const allowedLocationIds=$$('input[name=location]:checked',event.currentTarget).map(input=>input.value);let id=seller.id;if(id){await saveUser(id,{name:data.name.trim(),active:Boolean(data.active),allowedLocationIds});}else{id=await createSellerAccount({name:data.name.trim(),email:data.email.trim(),password:data.password,active:Boolean(data.active),allowedLocationIds});}await syncSellerAssignments(id,allowedLocationIds);[state.users,state.locations]=await Promise.all([listUsers(),listLocations()]);renderLocationSelector();modal.close();renderSellers();toast("Vendedor guardado","success");}catch(error){const message=error.code==="auth/email-already-in-use"?"Ese email ya está registrado":error.message;toast(message,"error");setBusy(button,false);}};
 }
 

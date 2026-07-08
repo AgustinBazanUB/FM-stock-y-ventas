@@ -6,10 +6,45 @@ service cloud.firestore {
     function isAdmin() { return signedIn() && profile().active == true && profile().role == "admin"; }
     function isSeller() { return signedIn() && profile().active == true && profile().role == "seller"; }
     function allowedLocation(locationId) { return isSeller() && locationId in profile().allowedLocationIds; }
+    function locationNotDeleted(location) { return !("deleted" in location) || location.deleted != true; }
+    function locationNotPaused(location) {
+      return !("manualInactiveUntil" in location)
+        || location.manualInactiveUntil == null
+        || location.manualInactiveUntil <= request.time;
+    }
+    function locationScheduleStarted(location) {
+      return !("scheduleStartAt" in location)
+        || location.scheduleStartAt == null
+        || location.scheduleStartAt <= request.time;
+    }
+    function locationScheduleNotEnded(location) {
+      return !("scheduleEndAt" in location)
+        || location.scheduleEndAt == null
+        || location.scheduleEndAt >= request.time;
+    }
+    function autoActiveLocation(location) {
+      return "autoActivityManaged" in location
+        && location.autoActivityManaged == true
+        && locationNotPaused(location)
+        && locationScheduleStarted(location)
+        && locationScheduleNotEnded(location)
+        && (location.active == true
+          || ("manualInactiveUntil" in location
+            && location.manualInactiveUntil != null
+            && location.manualInactiveUntil <= request.time));
+    }
+    function legacyActiveLocation(location) {
+      return (!("autoActivityManaged" in location) || location.autoActivityManaged != true)
+        && locationNotPaused(location)
+        && (location.active == true
+          || ("manualInactiveUntil" in location
+            && location.manualInactiveUntil != null
+            && location.manualInactiveUntil <= request.time));
+    }
     function activeAllowedLocation(locationId) {
       let location = get(/databases/$(database)/documents/locations/$(locationId)).data;
-      return allowedLocation(locationId) && location.active == true
-        && (!("deleted" in location) || location.deleted != true);
+      return allowedLocation(locationId) && locationNotDeleted(location)
+        && (autoActiveLocation(location) || legacyActiveLocation(location));
     }
     function validPaymentPart(part) {
       return part is map

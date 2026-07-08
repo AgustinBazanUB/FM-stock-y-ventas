@@ -7,6 +7,7 @@ import {
 import {localDateKey} from "./utils.js";
 import {calculateDiscountSummary} from "./discounts.js";
 import {normalizePayment} from "./payments.js";
+import {addDays, isLocationActiveNow, toLocalDateTimeInput} from "./locations.js";
 
 const config = window.FLOR_MIA_FIREBASE_CONFIG;
 if (!config) throw new Error("Falta la configuración de Firebase");
@@ -65,6 +66,22 @@ export async function saveLocation(id, data) {
   return target.id;
 }
 
+export async function pauseLocation(locationId, {days, user}) {
+  const qty = wholeQuantity(days, "Los días inactiva");
+  if (qty < 1) throw new Error("Los días inactiva deben ser mayores a cero");
+  const until = addDays(new Date(), qty);
+  await updateDoc(doc(db,"locations",locationId), {
+    active:false,
+    manualInactiveUntil:until,
+    manualInactiveUntilDateTime:toLocalDateTimeInput(until),
+    manualInactiveDays:qty,
+    manualInactiveAt:serverTimestamp(),
+    manualInactiveBy:user.id,
+    manualInactiveByName:user.name || "Administrador",
+    updatedAt:serverTimestamp()
+  });
+}
+
 export async function saveProduct(id, data) {
   const target = id ? doc(db, "products", id) : doc(collection(db, "products"));
   const normalized = Object.hasOwn(data,"defaultPrice") ? {...data,defaultPrice:wholeQuantity(data.defaultPrice,"El precio")} : data;
@@ -76,7 +93,7 @@ export async function saveProduct(id, data) {
   const stocksByLocation = await Promise.all(locations.map(location => listLocationStock(location.id)));
   if (normalized.active !== false && (normalized.buttonCode || normalized.buttonKey)) {
     for (let index=0;index<locations.length;index+=1) {
-      if (locations[index].active !== true || locations[index].deleted === true) continue;
+      if (!isLocationActiveNow(locations[index]) || locations[index].deleted === true) continue;
       const duplicate = stocksByLocation[index].find(item => item.id !== id && item.active && item.deleted !== true
         && ((normalized.buttonCode && item.buttonCode === normalized.buttonCode) || (normalized.buttonKey && item.buttonKey === normalized.buttonKey)));
       if (duplicate) throw new Error(`La tecla ya está asignada a ${duplicate.productName} en ${locations[index].name}`);
@@ -381,7 +398,7 @@ export async function restoreSaleTransaction({saleId, user}) {
     if (!["cancelled","deleted"].includes(sale.status)) throw new Error("La venta no está anulada");
     const locationRef = doc(db,"locations",sale.locationId);
     const locationSnap = await transaction.get(locationRef);
-    if (!locationSnap.exists() || locationSnap.data().active !== true || locationSnap.data().deleted === true) throw new Error("La ubicación de la venta no está activa");
+    if (!locationSnap.exists() || !isLocationActiveNow(locationSnap.data()) || locationSnap.data().deleted === true) throw new Error("La ubicación de la venta no está activa");
     const stockRefs = sale.items.map(item => doc(db,"locationStock",sale.locationId,"items",item.productId));
     const stockSnaps = [];
     for (const stockRef of stockRefs) stockSnaps.push(await transaction.get(stockRef));

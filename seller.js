@@ -4,6 +4,7 @@ import {SellerKeyboard} from "./keyboard.js";
 import {calculateDiscountSummary, saleDiscountList, storedDiscountTotal} from "./discounts.js";
 import {savePendingSale, getPendingSales, markPendingSaleSynced, markPendingSaleError, deletePendingSale} from "./offline-sales.js";
 import {PAYMENT_OPTIONS, SINGLE_PAYMENT_METHODS, normalizePayment, salePaymentParts, paymentAllocationSummary, completeRemainingPayment} from "./payments.js";
+import {isLocationActiveNow} from "./locations.js";
 
 let state = null;
 const PAYMENT_METHODS = PAYMENT_OPTIONS;
@@ -22,7 +23,7 @@ export async function renderSeller(root, profile, onLogout) {
   root.innerHTML = `<div class="center-screen"><div><div class="brand-mark">FM</div><p>Cargando punto de venta…</p></div></div>`;
   try {
     const [allLocations, allDiscounts] = await Promise.all([listAllowedLocations(profile.allowedLocationIds || []), listActiveDiscounts()]);
-    state.locations = allLocations.filter(location => location.active);
+    state.locations = allLocations.filter(location => isLocationActiveNow(location));
     state.discounts = allDiscounts;
     if (!state.locations.length) throw new Error("No tenés ubicaciones activas asignadas");
     state.locationId = localStorage.getItem(`flor-mia-location-${profile.id}`);
@@ -245,7 +246,7 @@ async function saveSale() {
   if(!state.cart.size)return toast("La venta está vacía","error");
   if(!state.paymentMethod)return toast("Elegí una forma de pago antes de registrar la venta.","error");
   const currentLocation=location();
-  if(!currentLocation?.id||currentLocation.active!==true)return toast("La ubicación seleccionada no está activa","error");
+  if(!currentLocation?.id||!isLocationActiveNow(currentLocation))return toast("La ubicación seleccionada no está activa","error");
   if(!state.profile?.id)return toast("La sesión del vendedor no es válida","error");
   if(!navigator.onLine&&state.editSale)return toast("Necesitás conexión para editar una venta ya registrada.","error");
   if(!await ensureCartStockWarnings())return;
