@@ -45,6 +45,8 @@ const wholeQuantity = (value, label) => {
 };
 export const listUsers = async () => docsToArray(await getDocs(collection(db, "users")));
 export const listProducts = async () => docsToArray(await getDocs(query(collection(db, "products"), orderBy("name"))));
+export const listProductCategories = async () => docsToArray(await getDocs(collection(db, "productCategories"))).sort((a,b)=>Number(a.sortOrder||0)-Number(b.sortOrder||0)||String(a.name||"").localeCompare(String(b.name||"")));
+export const listVisibleProductCategories = async () => docsToArray(await getDocs(query(collection(db, "productCategories"), where("active","==",true), where("deleted","==",false)))).sort((a,b)=>Number(a.sortOrder||0)-Number(b.sortOrder||0)||String(a.name||"").localeCompare(String(b.name||"")));
 export const listLocations = async () => docsToArray(await getDocs(query(collection(db, "locations"), orderBy("name"))));
 export const listDiscounts = async () => docsToArray(await getDocs(query(collection(db, "discounts"), orderBy("name"))));
 
@@ -108,6 +110,8 @@ export async function saveProduct(id, data) {
       ...(Object.hasOwn(normalized,"abbreviation") ? {abbreviation:normalized.abbreviation} : {}),
       ...(Object.hasOwn(normalized,"imageUrl") ? {imageUrl:normalized.imageUrl} : {}),
       ...(Object.hasOwn(normalized,"thumbUrl") ? {thumbUrl:normalized.thumbUrl} : {}),
+      ...(Object.hasOwn(normalized,"categoryId") ? {categoryId:normalized.categoryId || ""} : {}),
+      ...(Object.hasOwn(normalized,"categoryName") ? {categoryName:normalized.categoryName || ""} : {}),
       ...(Object.hasOwn(normalized,"buttonKey") ? {buttonKey:normalized.buttonKey} : {}),
       ...(Object.hasOwn(normalized,"buttonCode") ? {buttonCode:normalized.buttonCode} : {}),
       ...(Object.hasOwn(normalized,"buttonLabel") ? {buttonLabel:normalized.buttonLabel} : {}),
@@ -117,6 +121,21 @@ export async function saveProduct(id, data) {
     batch.set(doc(db,"locationStock",locations[index].id,"items",id), propagated, {merge:true});
   });
   await batch.commit();
+  return target.id;
+}
+
+export async function saveProductCategory(id, data) {
+  const target = id ? doc(db, "productCategories", id) : doc(collection(db, "productCategories"));
+  const sortOrder = Number.isFinite(Number(data.sortOrder)) ? Number(data.sortOrder) : 0;
+  await setDoc(target, {
+    name:String(data.name || "").trim(),
+    description:String(data.description || "").trim(),
+    sortOrder,
+    active:data.active !== false,
+    deleted:data.deleted === true,
+    updatedAt:serverTimestamp(),
+    ...(id ? {} : {createdAt:serverTimestamp()})
+  }, {merge:true});
   return target.id;
 }
 
@@ -218,6 +237,7 @@ export async function configureStock({locationId, product, values, user}) {
     const currentStock = existing.exists() && !wasDeleted ? oldStock + initialDifference : initial;
     transaction.set(stockRef, {
       productId:product.id, productName:product.name, abbreviation:product.abbreviation,
+      categoryId:product.categoryId || "", categoryName:product.categoryName || "",
       imageUrl:product.imageUrl || "", thumbUrl:product.thumbUrl || "",
       price, initialStock:initial,
       currentStock, yellowAlertQty, redAlertQty,

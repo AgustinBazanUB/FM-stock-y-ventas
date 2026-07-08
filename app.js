@@ -1,6 +1,6 @@
 import {watchSession, submitLogin, logout} from "./auth.js";
-import {renderAdmin, destroyAdmin} from "./admin.js?v=19";
-import {renderSeller, destroySeller} from "./seller.js?v=19";
+import {renderAdmin, destroyAdmin} from "./admin.js?v=20";
+import {renderSeller, destroySeller} from "./seller.js?v=20";
 import {$, toast, setBusy, updateConnectionStatus, handleImageError} from "./utils.js";
 
 const loading = $("#loading-screen");
