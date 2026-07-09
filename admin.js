@@ -3,10 +3,10 @@ import {
   saveUser, createSellerAccount, syncSellerAssignments, configureStock, addStock, subscribeLocationStock,
   subscribeLocationSales, deleteSaleTransaction, restoreSaleTransaction, listSellerSales, reauthenticateAdmin, deleteLocationLogical,
   restoreLocation, deleteProductLogical, restoreProduct, deleteDiscountLogical, restoreDiscount,
-  deleteLocationStock, deleteSellerLogical, listSalesByDateRange, pauseLocation
+  deleteLocationStock, deleteSellerLogical, listSalesByDateRange, pauseLocation, getKeyboardShortcuts, saveKeyboardShortcuts
 } from "./firebase-service.js";
-import {$, $$, escapeHtml, money, dateTime, dateOnly, timeOnly, toast, openModal, confirmDialog, setBusy, formDataObject, imageOrPlaceholder, downloadCsv} from "./utils.js";
-import {recordNextKey} from "./keyboard.js";
+import {$, $$, escapeHtml, money, dateTime, dateOnly, timeOnly, toast, openModal, confirmDialog, setBusy, formDataObject, imageOrPlaceholder, downloadCsv, panelSwitcherHtml, setupPanelSwitcher} from "./utils.js";
+import {recordNextKey, AdminKeyboardNavigation, SELLER_ACTION_SHORTCUTS, sameShortcut, keyIdentity} from "./keyboard.js";
 import {listProductImages} from "./image-catalog.js";
 import {saleDiscountList, storedDiscountTotal} from "./discounts.js";
 import {PAYMENT_LABELS as SALE_PAYMENT_LABELS, salePaymentParts, paymentsBreakdownText} from "./payments.js";
@@ -18,19 +18,21 @@ let state = null;
 const PAYMENT_LABELS = {...SALE_PAYMENT_LABELS,unknown:"Sin forma de pago"};
 
 export function destroyAdmin() {
-  state?.unsubStock?.(); state?.unsubSales?.();
+  state?.unsubStock?.(); state?.unsubSales?.(); state?.adminKeyboard?.destroy();
   state = null;
 }
 
-export async function renderAdmin(root, profile, onLogout) {
+export async function renderAdmin(root, profile, onLogout, panelOptions = {}) {
   if (state?.profile?.id === profile.id) return;
   destroyAdmin();
-  state = {root, profile, onLogout, section:"summary", users:[], products:[], productCategories:[], productImages:[], locations:[], discounts:[], stock:[], sales:[], selectedLocationId:"", salesLimit:200, unsubStock:null, unsubSales:null, metrics:{filters:{period:"month",dateValue:currentMetricsValue("month"),locationIds:[],sellerIds:[],productId:"",discountId:""},sales:[],loaded:false,loading:false,error:"",requestId:0}};
-  root.innerHTML = shell(profile);
+  state = {root, profile, onLogout, panelOptions, section:"summary", users:[], products:[], productCategories:[], productImages:[], locations:[], discounts:[], shortcuts:{sellerActions:{}}, stock:[], sales:[], selectedLocationId:"", salesLimit:200, unsubStock:null, unsubSales:null, adminKeyboard:null, metrics:{filters:{period:"month",dateValue:currentMetricsValue("month"),locationIds:[],sellerIds:[],productId:"",discountId:""},sales:[],loaded:false,loading:false,error:"",requestId:0}};
+  root.innerHTML = shell(profile, panelOptions);
+  state.adminKeyboard = new AdminKeyboardNavigation(root);
+  setupPanelSwitcher(root, panelOptions, "admin");
   $("#admin-logout", root).addEventListener("click", onLogout);
   $$("[data-section]", root).forEach(button => button.addEventListener("click", () => switchSection(button.dataset.section)));
   try {
-    [state.users, state.products, state.productCategories, state.locations, state.discounts, state.productImages] = await Promise.all([listUsers(), listProducts(), listProductCategories(), listLocations(), listDiscounts(), listProductImages()]);
+    [state.users, state.products, state.productCategories, state.locations, state.discounts, state.productImages, state.shortcuts] = await Promise.all([listUsers(), listProducts(), listProductCategories(), listLocations(), listDiscounts(), listProductImages(), getKeyboardShortcuts()]);
     state.selectedLocationId = activeLocations()[0]?.id || "";
     renderLocationSelector();
     subscribeSelected();
@@ -41,10 +43,10 @@ export async function renderAdmin(root, profile, onLogout) {
   }
 }
 
-function shell(profile) {
-  return `<header class="app-header"><div class="logo">Flor Mia</div><select id="admin-location" aria-label="Ubicación activa"><option>Cargando…</option></select><div class="header-spacer"></div><div class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</div><div class="user-chip"><strong>${escapeHtml(profile.name)}</strong>Administrador</div><button id="admin-logout" class="btn btn-ghost btn-small">Salir</button></header>
+function shell(profile, panelOptions) {
+  return `<header class="app-header"><div class="logo">Flor Mia</div><select id="admin-location" aria-label="Ubicación activa"><option>Cargando…</option></select><div class="header-spacer"></div><div class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</div>${panelSwitcherHtml(profile, panelOptions, "admin")}<button id="admin-logout" class="btn btn-ghost btn-small">Salir</button></header>
   <div class="admin-layout"><nav class="side-nav" aria-label="Administración">
-    <button data-section="summary" class="active">Resumen</button><button data-section="metrics">Métricas</button><button data-section="locations">Ubicaciones</button><button data-section="products">Productos</button><button data-section="stock">Cargar Stock</button><button data-section="sellers">Vendedores</button><button data-section="discounts">Descuentos</button><button data-section="sales">Ventas</button><button data-section="deletedItems">Items Eliminados</button><button data-section="exports">Exportar</button><button data-section="help">Ayuda</button>
+    <button data-section="summary" class="active">Resumen</button><button data-section="metrics">Métricas</button><button data-section="locations">Ubicaciones</button><button data-section="products">Productos</button><button data-section="stock">Cargar Stock</button><button data-section="sellers">Vendedores</button><button data-section="discounts">Descuentos</button><button data-section="shortcuts">Atajos</button><button data-section="sales">Ventas</button><button data-section="deletedItems">Items Eliminados</button><button data-section="exports">Exportar</button><button data-section="help">Ayuda</button>
   </nav><main id="admin-content" class="page"><div class="empty">Cargando información…</div></main></div>`;
 }
 
@@ -72,8 +74,9 @@ function switchSection(section) {
 
 function renderSection() {
   if (!state) return;
-  const renderers = {summary:renderSummary, metrics:renderMetrics, locations:renderLocations, products:renderProducts, stock:renderStock, sellers:renderSellers, discounts:renderDiscounts, sales:renderSales, deletedItems:renderDeletedItems, exports:renderExports, help:renderHelp};
+  const renderers = {summary:renderSummary, metrics:renderMetrics, locations:renderLocations, products:renderProducts, stock:renderStock, sellers:renderSellers, discounts:renderDiscounts, shortcuts:renderShortcuts, sales:renderSales, deletedItems:renderDeletedItems, exports:renderExports, help:renderHelp};
   renderers[state.section]?.();
+  state.adminKeyboard?.refresh();
 }
 
 const activeLocations=()=>state.locations.filter(item=>isLocationActiveNow(item)&&item.deleted!==true);
@@ -84,6 +87,50 @@ const deletedProducts=()=>state.products.filter(item=>item.deleted===true);
 const activeDiscounts=()=>state.discounts.filter(item=>item.active===true&&item.deleted!==true);
 const deletedDiscounts=()=>state.discounts.filter(item=>item.deleted===true);
 const activeSellers=()=>state.users.filter(item=>item.role==="seller"&&item.active===true&&item.deleted!==true);
+
+function shortcutFromRecorded(recorded, label) {
+  return {label, key:recorded.buttonKey || "", code:recorded.buttonCode || "", location:recorded.buttonLocation ?? 0, keyLabel:recorded.buttonLabel || ""};
+}
+
+function shortcutDisplay(item) {
+  return keyIdentity(item).label || "—";
+}
+
+function actionShortcutList() {
+  const saved = state.shortcuts?.sellerActions || {};
+  return SELLER_ACTION_SHORTCUTS.map(definition => ({...definition, ...(saved[definition.id] || {})}));
+}
+
+function shortcutHasKey(item) {
+  const identity = keyIdentity(item);
+  return Boolean(identity.key || identity.code);
+}
+
+function shortcutConflictNames(shortcut, {ignoreActionId = "", ignoreDiscountId = "", includeActions = true, includeDiscounts = true, includeProducts = true} = {}) {
+  const names = [];
+  if (includeActions) {
+    actionShortcutList().filter(shortcutHasKey).forEach(action => {
+      if (action.id !== ignoreActionId && sameShortcut(action, shortcut)) names.push(`Atajos: ${action.label}`);
+    });
+  }
+  if (includeDiscounts) {
+    activeDiscounts().filter(shortcutHasKey).forEach(discount => {
+      if (discount.id !== ignoreDiscountId && sameShortcut(discount, shortcut)) names.push(`Descuento: ${discount.name}`);
+    });
+  }
+  if (includeProducts) {
+    activeProducts().filter(shortcutHasKey).forEach(product => {
+      if (sameShortcut(product, shortcut)) names.push(`Producto: ${product.name}`);
+    });
+  }
+  return names;
+}
+
+async function warnCrossShortcutConflicts(shortcut, options = {}) {
+  const names = shortcutConflictNames(shortcut, options);
+  if (!names.length) return true;
+  return confirmDialog(`La tecla ya está asignada a ${names.join(", ")}. En Nueva Venta la prioridad será: acciones rápidas, descuentos y productos. ¿Guardar igual?`, "Atajo repetido");
+}
 
 function ensureSelectedLocation(){const active=activeLocations();if(!active.some(item=>item.id===state.selectedLocationId))state.selectedLocationId=active[0]?.id||"";renderLocationSelector();subscribeSelected();}
 
@@ -452,14 +499,14 @@ function stockAddForm(item) {
 
 function renderSellers() {
   const sellers=activeSellers();
-  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Vendedores</h1><div class="actions"><button class="btn btn-primary" id="new-seller">+ Nuevo vendedor</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Email</th><th>Ubicaciones</th><th>Estado</th><th></th></tr></thead><tbody>${sellers.map(seller=>`<tr><td data-label="Nombre">${escapeHtml(seller.name)}</td><td data-label="Email">${escapeHtml(seller.email)}</td><td data-label="Ubicaciones">${(seller.allowedLocationIds||[]).map(id=>{const location=visibleLocations().find(l=>l.id===id);return escapeHtml(location?`${location.name}${isLocationActiveNow(location)?"":" (inactiva)"}`:"?");}).join(", ")||"—"}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-seller="${seller.id}">Editar</button><button class="btn btn-ghost btn-small" data-view-seller="${seller.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-seller="${seller.id}">Eliminar vendedor</button></div></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay vendedores activos</div></td></tr>`}</tbody></table></div>`;
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Vendedores</h1><div class="actions"><button class="btn btn-primary" id="new-seller">+ Nuevo vendedor</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Email</th><th>Ubicaciones</th><th>Permisos</th><th>Estado</th><th></th></tr></thead><tbody>${sellers.map(seller=>`<tr><td data-label="Nombre">${escapeHtml(seller.name)}</td><td data-label="Email">${escapeHtml(seller.email)}</td><td data-label="Ubicaciones">${(seller.allowedLocationIds||[]).map(id=>{const location=visibleLocations().find(l=>l.id===id);return escapeHtml(location?`${location.name}${isLocationActiveNow(location)?"":" (inactiva)"}`:"?");}).join(", ")||"—"}</td><td data-label="Permisos">${seller.canAccessAdmin||seller.isAdmin?`<span class="badge info">Admin</span>`:`<span class="badge">Vendedor</span>`}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-seller="${seller.id}">Editar</button><button class="btn btn-ghost btn-small" data-view-seller="${seller.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-seller="${seller.id}">Eliminar vendedor</button></div></td></tr>`).join("")||`<tr><td colspan="6"><div class="empty">No hay vendedores activos</div></td></tr>`}</tbody></table></div>`;
   $("#new-seller").onclick=()=>sellerForm();$$('[data-edit-seller]').forEach(button=>button.onclick=()=>sellerForm(sellers.find(item=>item.id===button.dataset.editSeller)));$$('[data-view-seller]').forEach(button=>button.onclick=()=>sellerSales(button.dataset.viewSeller));$$('[data-delete-seller]').forEach(button=>button.onclick=async()=>{const seller=sellers.find(item=>item.id===button.dataset.deleteSeller);if(!await confirmDialog("¿Querés eliminar este vendedor?"))return;setBusy(button,true,"Eliminando…");try{await deleteSellerLogical(seller.id,state.profile);[state.users,state.locations]=await Promise.all([listUsers(),listLocations()]);renderSellers();toast("Vendedor eliminado y accesos retirados","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
 }
 
 function sellerForm(seller={}) {
   const locations=visibleLocations();
-  const modal=openModal({title:seller.id?"Editar vendedor":"Nuevo vendedor",content:`<form id="seller-form"><label>Nombre<input name="name" required value="${escapeHtml(seller.name||"")}"></label><label>Email<input name="email" type="email" required value="${escapeHtml(seller.email||"")}" ${seller.id?"disabled":""}></label>${seller.id?"":`<label>Contraseña temporal<input name="password" type="password" minlength="6" required><span class="form-hint">El vendedor la usará para su primer ingreso.</span></label>`}<label>Ubicaciones<div class="check-list">${locations.map(location=>`<label><input type="checkbox" name="location" value="${location.id}" ${(seller.allowedLocationIds||[]).includes(location.id)?"checked":""}> ${escapeHtml(location.name)}${isLocationActiveNow(location)?"":" · inactiva"}</label>`).join("")||"Primero creá una ubicación"}</div></label><label><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${seller.active!==false?"checked":""}> Usuario activo</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
-  $(".modal-cancel",modal.root).onclick=modal.close;$("#seller-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{const data=formDataObject(event.currentTarget);const allowedLocationIds=$$('input[name=location]:checked',event.currentTarget).map(input=>input.value);let id=seller.id;if(id){await saveUser(id,{name:data.name.trim(),active:Boolean(data.active),allowedLocationIds});}else{id=await createSellerAccount({name:data.name.trim(),email:data.email.trim(),password:data.password,active:Boolean(data.active),allowedLocationIds});}await syncSellerAssignments(id,allowedLocationIds);[state.users,state.locations]=await Promise.all([listUsers(),listLocations()]);renderLocationSelector();modal.close();renderSellers();toast("Vendedor guardado","success");}catch(error){const message=error.code==="auth/email-already-in-use"?"Ese email ya está registrado":error.message;toast(message,"error");setBusy(button,false);}};
+  const modal=openModal({title:seller.id?"Editar vendedor":"Nuevo vendedor",content:`<form id="seller-form"><label>Nombre<input name="name" required value="${escapeHtml(seller.name||"")}"></label><label>Email<input name="email" type="email" required value="${escapeHtml(seller.email||"")}" ${seller.id?"disabled":""}></label>${seller.id?"":`<label>Contraseña temporal<input name="password" type="password" minlength="6" required><span class="form-hint">El vendedor la usará para su primer ingreso.</span></label>`}<label>Ubicaciones<div class="check-list">${locations.map(location=>`<label><input type="checkbox" name="location" value="${location.id}" ${(seller.allowedLocationIds||[]).includes(location.id)?"checked":""}> ${escapeHtml(location.name)}${isLocationActiveNow(location)?"":" · inactiva"}</label>`).join("")||"Primero creá una ubicación"}</div></label><label><span><input style="width:auto;min-height:auto" type="checkbox" name="canAccessAdmin" ${seller.canAccessAdmin||seller.isAdmin?"checked":""}> Permitir acceso administrador</span><span class="form-hint">Puede abrir Panel Administrador y también seguir vendiendo si tiene ubicaciones asignadas.</span></label><label><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${seller.active!==false?"checked":""}> Usuario activo</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;$("#seller-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{const data=formDataObject(event.currentTarget);const allowedLocationIds=$$('input[name=location]:checked',event.currentTarget).map(input=>input.value);const canAccessAdmin=Boolean(data.canAccessAdmin);let id=seller.id;if(id){await saveUser(id,{name:data.name.trim(),active:Boolean(data.active),allowedLocationIds,canAccessAdmin,isAdmin:canAccessAdmin});}else{id=await createSellerAccount({name:data.name.trim(),email:data.email.trim(),password:data.password,active:Boolean(data.active),allowedLocationIds,canAccessAdmin});}await syncSellerAssignments(id,allowedLocationIds);[state.users,state.locations]=await Promise.all([listUsers(),listLocations()]);renderLocationSelector();modal.close();renderSellers();toast("Vendedor guardado","success");}catch(error){const message=error.code==="auth/email-already-in-use"?"Ese email ya está registrado":error.message;toast(message,"error");setBusy(button,false);}};
 }
 
 function sellerMetricsHtml(sales){const active=sales.filter(sale=>sale.status==="active");const total=active.reduce((sum,sale)=>sum+Number(sale.total||0),0);const items=active.reduce((sum,sale)=>sum+Number(sale.totalItems||0),0);return `<div class="cards"><div class="card metric"><strong>${money(total)}</strong><span>Total vendido</span></div><div class="card metric"><strong>${active.length}</strong><span>Ventas activas</span></div><div class="card metric"><strong>${items}</strong><span>Productos vendidos</span></div><div class="card metric"><strong>${money(active.length?total/active.length:0)}</strong><span>Ticket promedio</span></div></div>`;}
@@ -478,15 +525,74 @@ async function sellerSales(sellerId){
   }catch(error){toast(error.message,"error");}
 }
 
+async function persistSellerActionShortcut(action, shortcut) {
+  const sellerActions={...(state.shortcuts?.sellerActions||{})};
+  sellerActions[action.id]=shortcut;
+  await saveKeyboardShortcuts({sellerActions}, state.profile);
+  state.shortcuts={...(state.shortcuts||{}),sellerActions};
+}
+
+function renderShortcuts() {
+  const actions=actionShortcutList();
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><div><h1>Atajos</h1><p class="muted">Teclas rápidas para Nueva Venta del panel vendedor. Prioridad: acciones rápidas, descuentos y productos.</p></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Comando</th><th>Tecla asignada</th><th></th></tr></thead><tbody>${actions.map(action=>`<tr><td data-label="Comando">${escapeHtml(action.label)}</td><td data-label="Tecla asignada">${escapeHtml(shortcutDisplay(action))}</td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-record-shortcut="${action.id}">Grabar tecla</button><button class="btn btn-ghost btn-small" data-clear-shortcut="${action.id}" ${shortcutHasKey(action)?"":"disabled"}>Limpiar atajo</button></div></td></tr>`).join("")}</tbody></table></div>`;
+  $$("[data-record-shortcut]").forEach(button=>button.onclick=()=>recordSellerActionShortcut(actions.find(action=>action.id===button.dataset.recordShortcut)));
+  $$("[data-clear-shortcut]").forEach(button=>button.onclick=async()=>{const action=actions.find(item=>item.id===button.dataset.clearShortcut);setBusy(button,true,"Limpiando…");try{await persistSellerActionShortcut(action,{label:action.label,key:"",code:"",location:0,keyLabel:""});renderShortcuts();toast("Atajo limpiado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
+}
+
+function recordSellerActionShortcut(action) {
+  let stopRecording=null;
+  const modal=openModal({title:`Grabar ${action.label}`,onClose:()=>stopRecording?.(),content:`<p>Presioná la tecla que querés usar para este atajo.</p><p id="shortcut-recording-status" class="muted">Esperando una tecla…</p><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button></div>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;
+  stopRecording=recordNextKey({onRecorded:async key=>{
+    stopRecording=null;
+    const shortcut=shortcutFromRecorded(key,action.label);
+    $("#shortcut-recording-status",modal.root).textContent=`Tecla detectada: ${key.buttonLabel}`;
+    try{
+      const duplicate=actionShortcutList().find(item=>item.id!==action.id&&sameShortcut(item,shortcut));
+      if(duplicate)throw new Error(`La tecla ya está asignada a ${duplicate.label}`);
+      const canContinue=await warnCrossShortcutConflicts(shortcut,{ignoreActionId:action.id,includeActions:false});
+      if(!canContinue){modal.close();renderShortcuts();return;}
+      await persistSellerActionShortcut(action,shortcut);
+      modal.close();renderShortcuts();toast("Atajo guardado","success");
+    }catch(error){toast(error.message,"error");modal.close();}
+  },onCancel:()=>{stopRecording=null;modal.close();}});
+}
+
 function renderDiscounts() {
   const discounts=activeDiscounts();
-  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Descuentos</h1><div class="actions"><button class="btn btn-primary" id="new-discount">+ Nuevo descuento</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Tipo</th><th>Valor</th><th>Estado</th><th></th></tr></thead><tbody>${discounts.map(item=>`<tr><td data-label="Nombre">${escapeHtml(item.name)}</td><td data-label="Tipo">${item.type==="percent"?"Porcentaje":"Monto fijo"}</td><td data-label="Valor">${item.type==="percent"?`${item.value}%`:money(item.value)}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-discount="${item.id}">Editar</button><button class="btn btn-danger btn-small" data-delete-discount="${item.id}">Eliminar descuento</button></div></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay descuentos activos</div></td></tr>`}</tbody></table></div>`;
+  $("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Descuentos</h1><div class="actions"><button class="btn btn-primary" id="new-discount">+ Nuevo descuento</button></div></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Tipo</th><th>Valor</th><th>Atajo</th><th>Estado</th><th></th></tr></thead><tbody>${discounts.map(item=>`<tr><td data-label="Nombre">${escapeHtml(item.name)}</td><td data-label="Tipo">${item.type==="percent"?"Porcentaje":"Monto fijo"}</td><td data-label="Valor">${item.type==="percent"?`${item.value}%`:money(item.value)}</td><td data-label="Atajo">${escapeHtml(shortcutDisplay(item))}</td><td data-label="Estado"><span class="badge ok">Activo</span></td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-discount="${item.id}">Editar</button><button class="btn btn-danger btn-small" data-delete-discount="${item.id}">Eliminar descuento</button></div></td></tr>`).join("")||`<tr><td colspan="6"><div class="empty">No hay descuentos activos</div></td></tr>`}</tbody></table></div>`;
   $("#new-discount").onclick=()=>discountForm();$$('[data-edit-discount]').forEach(button=>button.onclick=()=>discountForm(discounts.find(item=>item.id===button.dataset.editDiscount)));$$('[data-delete-discount]').forEach(button=>button.onclick=async()=>{const item=discounts.find(row=>row.id===button.dataset.deleteDiscount);if(!await confirmDialog("¿Querés eliminar este descuento?"))return;setBusy(button,true,"Eliminando…");try{await deleteDiscountLogical(item.id,state.profile);state.discounts=await listDiscounts();renderDiscounts();toast("Descuento eliminado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});
 }
 
 function renderDeletedDiscounts(){const discounts=deletedDiscounts();$("#admin-content",state.root).innerHTML=`<div class="page-head"><h1>Descuentos eliminados</h1></div><div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Tipo</th><th>Valor</th><th>Eliminado</th><th></th></tr></thead><tbody>${discounts.map(item=>`<tr><td data-label="Nombre">${escapeHtml(item.name)}</td><td data-label="Tipo">${item.type==="percent"?"Porcentaje":"Monto fijo"}</td><td data-label="Valor">${item.type==="percent"?`${item.value}%`:money(item.value)}</td><td data-label="Eliminado">${dateTime(item.deletedAt)}</td><td data-label="Acciones"><button class="btn btn-primary btn-small" data-restore-discount="${item.id}">Restaurar descuento</button></td></tr>`).join("")||`<tr><td colspan="5"><div class="empty">No hay descuentos eliminados</div></td></tr>`}</tbody></table></div>`;$$('[data-restore-discount]').forEach(button=>button.onclick=async()=>{const item=discounts.find(row=>row.id===button.dataset.restoreDiscount);if(!await confirmDialog(`¿Restaurar ${item.name}?`))return;setBusy(button,true,"Restaurando…");try{await restoreDiscount(item.id,state.profile);state.discounts=await listDiscounts();renderDeletedDiscounts();toast("Descuento restaurado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}});}
 
-function discountForm(item={}){const modal=openModal({title:item.id?"Editar descuento":"Nuevo descuento",content:`<form id="discount-form"><label>Nombre<input name="name" required value="${escapeHtml(item.name||"")}"></label><label>Tipo<select name="type"><option value="fixed" ${item.type!=="percent"?"selected":""}>Monto fijo</option><option value="percent" ${item.type==="percent"?"selected":""}>Porcentaje</option></select></label><label>Valor entero<input name="value" type="number" min="0" step="1" inputmode="numeric" required value="${Math.round(Number(item.value||0))}"></label><label><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${item.active!==false?"checked":""}> Descuento activo</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});$(".modal-cancel",modal.root).onclick=modal.close;$("#discount-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true);try{const data=formDataObject(event.currentTarget);if(!Number.isInteger(Number(data.value)))throw new Error("El descuento debe ser un número entero");if(data.type==="percent"&&Number(data.value)>100)throw new Error("El porcentaje no puede superar 100");await saveDiscount(item.id,{name:data.name.trim(),type:data.type,value:Number(data.value),active:Boolean(data.active)});state.discounts=await listDiscounts();modal.close();renderDiscounts();toast("Descuento guardado","success");}catch(error){toast(error.message,"error");setBusy(button,false);}};}
+function discountForm(item={}){
+  let recorded={discountKey:item.discountKey||"",discountCode:item.discountCode||"",discountLocation:item.discountLocation??0,discountKeyLabel:item.discountKeyLabel||""};
+  let stopRecording=null;
+  const modal=openModal({title:item.id?"Editar descuento":"Nuevo descuento",onClose:()=>stopRecording?.(),content:`<form id="discount-form"><label>Nombre<input name="name" required value="${escapeHtml(item.name||"")}"></label><label>Tipo<select name="type"><option value="fixed" ${item.type!=="percent"?"selected":""}>Monto fijo</option><option value="percent" ${item.type==="percent"?"selected":""}>Porcentaje</option></select></label><label>Valor entero<input name="value" type="number" min="0" step="1" inputmode="numeric" required value="${Math.round(Number(item.value||0))}"></label><div class="card"><strong>Tecla de atajo</strong><p id="discount-recorded-key" class="muted">${recorded.discountKeyLabel?`Tecla guardada: ${escapeHtml(recorded.discountKeyLabel)}`:"Sin tecla asignada"}</p><button type="button" class="btn btn-secondary" id="discount-record-key">Grabar tecla</button> <button type="button" class="btn btn-ghost" id="discount-clear-key">Quitar tecla</button></div><label><span><input style="width:auto;min-height:auto" type="checkbox" name="active" ${item.active!==false?"checked":""}> Descuento activo</span></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Guardar</button></div></form>`});
+  $(".modal-cancel",modal.root).onclick=modal.close;
+  $("#discount-clear-key",modal.root).onclick=()=>{recorded={discountKey:"",discountCode:"",discountLocation:0,discountKeyLabel:""};$("#discount-recorded-key",modal.root).textContent="Sin tecla asignada";};
+  $("#discount-record-key",modal.root).onclick=event=>{const button=event.currentTarget;button.disabled=true;button.textContent="Esperando una tecla…";$("#discount-recorded-key",modal.root).textContent="Presioná la tecla que querés asignar a este descuento";stopRecording=recordNextKey({onRecorded:key=>{stopRecording=null;recorded={discountKey:key.buttonKey,discountCode:key.buttonCode,discountLocation:key.buttonLocation,discountKeyLabel:key.buttonLabel};button.disabled=false;button.textContent="Grabar tecla";$("#discount-recorded-key",modal.root).textContent=`Tecla guardada: ${key.buttonLabel}`;},onCancel:()=>{stopRecording=null;button.disabled=false;button.textContent="Grabar tecla";$("#discount-recorded-key",modal.root).textContent=recorded.discountKeyLabel?`Tecla guardada: ${recorded.discountKeyLabel}`:"Sin tecla asignada";}});};
+  $("#discount-form",modal.root).onsubmit=async event=>{
+    event.preventDefault();
+    const button=event.submitter;
+    setBusy(button,true);
+    try{
+      const data=formDataObject(event.currentTarget);
+      const active=Boolean(data.active);
+      if(!Number.isInteger(Number(data.value)))throw new Error("El descuento debe ser un número entero");
+      if(data.type==="percent"&&Number(data.value)>100)throw new Error("El porcentaje no puede superar 100");
+      if(active&&shortcutHasKey(recorded)){
+        const duplicated=activeDiscounts().find(discount=>discount.id!==item.id&&sameShortcut(discount,recorded));
+        if(duplicated)throw new Error(`La tecla ya está asignada al descuento ${duplicated.name}`);
+        const canContinue=await warnCrossShortcutConflicts(recorded,{ignoreDiscountId:item.id,includeDiscounts:false});
+        if(!canContinue){setBusy(button,false);return;}
+      }
+      await saveDiscount(item.id,{name:data.name.trim(),type:data.type,value:Number(data.value),active,...recorded});
+      state.discounts=await listDiscounts();modal.close();renderDiscounts();toast("Descuento guardado","success");
+    }catch(error){toast(error.message,"error");setBusy(button,false);}
+  };
+}
 
 function salesTable(sales) {return `<div class="table-wrap"><table class="responsive"><thead><tr><th>Código</th><th>Fecha</th><th>Vendedor</th><th>Productos</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>${sales.map(sale=>`<tr><td data-label="Código">${escapeHtml(sale.saleCode)}</td><td data-label="Fecha">${dateTime(sale.createdAt)}</td><td data-label="Vendedor">${escapeHtml(sale.sellerName)}</td><td data-label="Productos">${sale.totalItems}</td><td data-label="Total"><strong>${money(sale.total)}</strong></td><td data-label="Estado"><span class="badge ${sale.status==="active"?"ok":"danger"}">${sale.status==="active"?"Activa":"Anulada"}</span></td><td data-label="Acciones"><button class="btn btn-ghost btn-small" data-sale-detail="${sale.id}">Ver</button>${sale.status==="active"?`<button class="btn btn-danger btn-small" data-delete-sale="${sale.id}">Anular</button>`:""}</td></tr>`).join("")||`<tr><td colspan="7"><div class="empty">No hay ventas</div></td></tr>`}</tbody></table></div>`;}
 

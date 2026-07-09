@@ -33,6 +33,7 @@ export async function getUserProfile(uid) {
 }
 
 const docsToArray = snap => snap.docs.map(item => ({id:item.id, ...item.data()}));
+const userCanAdmin = user => user?.role === "admin" || user?.canAccessAdmin === true || user?.isAdmin === true || (Array.isArray(user?.roles) && user.roles.includes("admin"));
 const nonNegativeNumber = (value, label) => {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) throw new Error(`${label} debe ser un número válido mayor o igual a cero`);
@@ -49,6 +50,25 @@ export const listProductCategories = async () => docsToArray(await getDocs(colle
 export const listVisibleProductCategories = async () => docsToArray(await getDocs(query(collection(db, "productCategories"), where("active","==",true), where("deleted","==",false)))).sort((a,b)=>Number(a.sortOrder||0)-Number(b.sortOrder||0)||String(a.name||"").localeCompare(String(b.name||"")));
 export const listLocations = async () => docsToArray(await getDocs(query(collection(db, "locations"), orderBy("name"))));
 export const listDiscounts = async () => docsToArray(await getDocs(query(collection(db, "discounts"), orderBy("name"))));
+
+export async function getKeyboardShortcuts() {
+  try {
+    const snap = await getDoc(doc(db, "settings", "keyboardShortcuts"));
+    return snap.exists() ? snap.data() : {sellerActions:{}};
+  } catch (error) {
+    if (error.code === "permission-denied") return {sellerActions:{}};
+    throw error;
+  }
+}
+
+export async function saveKeyboardShortcuts(data, user) {
+  await setDoc(doc(db, "settings", "keyboardShortcuts"), {
+    ...data,
+    updatedAt:serverTimestamp(),
+    updatedBy:user.id,
+    updatedByName:user.name || "Administrador"
+  }, {merge:true});
+}
 
 export async function listAllowedLocations(ids = []) {
   const snapshots = await Promise.all(ids.map(id => getDoc(doc(db, "locations", id))));
@@ -194,13 +214,13 @@ export async function deleteSellerLogical(sellerId, user) {
   await batch.commit();
 }
 
-export async function createSellerAccount({name, email, password, active, allowedLocationIds}) {
+export async function createSellerAccount({name, email, password, active, allowedLocationIds, canAccessAdmin = false}) {
   const secondaryName = `seller-${Date.now()}`;
   const secondaryApp = initializeApp(config, secondaryName);
   try {
     const credential = await createUserWithEmailAndPassword(getAuth(secondaryApp), email, password);
     await setDoc(doc(db, "users", credential.user.uid), {
-      name, email, role:"seller", active, allowedLocationIds,
+      name, email, role:"seller", active, allowedLocationIds, canAccessAdmin:Boolean(canAccessAdmin), isAdmin:Boolean(canAccessAdmin),
       createdAt:serverTimestamp(), updatedAt:serverTimestamp()
     });
     return credential.user.uid;
@@ -360,7 +380,7 @@ export async function updateSaleTransaction({saleId, seller, items, discounts, d
     if (!saleSnap.exists()) throw new Error("La venta ya no existe");
     const sale = saleSnap.data();
     if (sale.status !== "active") throw new Error("La venta está anulada");
-    if (seller.role !== "admin" && sale.sellerId !== seller.id) throw new Error("No podés editar esta venta");
+    if (!userCanAdmin(seller) && sale.sellerId !== seller.id) throw new Error("No podés editar esta venta");
     const oldQty = new Map((sale.items || []).map(item => [item.productId, Number(item.qty)]));
     const newQty = new Map(newItems.map(item => [item.productId, Number(item.qty)]));
     const productIds = [...new Set([...oldQty.keys(), ...newQty.keys()])];
@@ -392,7 +412,7 @@ export async function deleteSaleTransaction({saleId, user}) {
     if (!saleSnap.exists()) throw new Error("La venta ya no existe");
     const sale = saleSnap.data();
     if (sale.status !== "active") throw new Error("La venta ya está anulada");
-    if (user.role !== "admin" && sale.sellerId !== user.id) throw new Error("No podés anular esta venta");
+    if (!userCanAdmin(user) && sale.sellerId !== user.id) throw new Error("No podés anular esta venta");
     const stockRefs = sale.items.map(item => doc(db, "locationStock", sale.locationId, "items", item.productId));
     const stockSnaps = [];
     for (const stockRef of stockRefs) stockSnaps.push(await transaction.get(stockRef));
@@ -409,7 +429,7 @@ export async function deleteSaleTransaction({saleId, user}) {
 }
 
 export async function restoreSaleTransaction({saleId, user}) {
-  if (user.role !== "admin") throw new Error("Sólo un administrador puede restaurar ventas");
+  if (!userCanAdmin(user)) throw new Error("Sólo un administrador puede restaurar ventas");
   const saleRef = doc(db,"sales",saleId);
   await runTransaction(db, async transaction => {
     const saleSnap = await transaction.get(saleRef);

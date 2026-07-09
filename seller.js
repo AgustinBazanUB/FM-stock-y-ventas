@@ -1,6 +1,6 @@
-import {listAllowedLocations, listActiveDiscounts, listVisibleProductCategories, subscribeLocationStock, createSale, updateSaleTransaction, deleteSaleTransaction, listSellerDailyLocationSales} from "./firebase-service.js";
-import {$, $$, escapeHtml, money, dateTime, timeOnly, toast, openModal, confirmDialog, setBusy, imageOrPlaceholder, startOfToday, updateConnectionStatus} from "./utils.js";
-import {SellerKeyboard} from "./keyboard.js";
+import {listAllowedLocations, listActiveDiscounts, listVisibleProductCategories, subscribeLocationStock, createSale, updateSaleTransaction, deleteSaleTransaction, listSellerDailyLocationSales, getKeyboardShortcuts} from "./firebase-service.js";
+import {$, $$, escapeHtml, money, dateTime, timeOnly, toast, openModal, confirmDialog, setBusy, imageOrPlaceholder, startOfToday, updateConnectionStatus, panelSwitcherHtml, setupPanelSwitcher} from "./utils.js";
+import {SellerKeyboard, SELLER_ACTION_SHORTCUTS} from "./keyboard.js";
 import {calculateDiscountSummary, saleDiscountList, storedDiscountTotal} from "./discounts.js";
 import {savePendingSale, getPendingSales, markPendingSaleSynced, markPendingSaleError, deletePendingSale} from "./offline-sales.js";
 import {PAYMENT_OPTIONS, SINGLE_PAYMENT_METHODS, normalizePayment, salePaymentParts, paymentAllocationSummary, completeRemainingPayment} from "./payments.js";
@@ -17,35 +17,43 @@ export function destroySeller() {
   state = null;
 }
 
-export async function renderSeller(root, profile, onLogout) {
+export async function renderSeller(root, profile, onLogout, panelOptions = {}) {
   if (state?.profile?.id === profile.id) return;
   destroySeller();
-  state = {root, profile, onLogout, locations:[], discounts:[], productCategories:[], appliedDiscounts:[], stock:[], sales:[], pendingSales:[], payments:[], stockWarningsAccepted:new Set(), stockWarningOpen:false, locationId:"", cart:new Map(), lastProductId:null, paymentMethod:null, editSale:null, view:"new", unsubStock:null, keyboard:null, keyboardActive:true, saving:false, syncingPending:false, onlineHandler:null, offlineHandler:null};
+  state = {root, profile, onLogout, panelOptions, locations:[], discounts:[], productCategories:[], shortcuts:{sellerActions:{}}, appliedDiscounts:[], stock:[], sales:[], pendingSales:[], payments:[], stockWarningsAccepted:new Set(), stockWarningOpen:false, locationId:"", cart:new Map(), lastProductId:null, paymentMethod:null, editSale:null, view:"new", unsubStock:null, keyboard:null, keyboardActive:true, saving:false, syncingPending:false, onlineHandler:null, offlineHandler:null};
   root.innerHTML = `<div class="center-screen"><div><div class="brand-mark">FM</div><p>Cargando punto de venta…</p></div></div>`;
   try {
-    const [allLocations, allDiscounts, productCategories] = await Promise.all([listAllowedLocations(profile.allowedLocationIds || []), listActiveDiscounts(), listVisibleProductCategories()]);
+    const [allLocations, allDiscounts, productCategories, shortcuts] = await Promise.all([listAllowedLocations(profile.allowedLocationIds || []), listActiveDiscounts(), listVisibleProductCategories(), getKeyboardShortcuts()]);
     state.locations = allLocations.filter(location => isLocationActiveNow(location));
     state.discounts = allDiscounts;
     state.productCategories = productCategories;
-    if (!state.locations.length) throw new Error("No tenés ubicaciones activas asignadas");
+    state.shortcuts = shortcuts || {sellerActions:{}};
+    if (!state.locations.length) throw new Error("No tenés ubicaciones asignadas para vender. Asignate una ubicación desde el panel administrador.");
     state.locationId = localStorage.getItem(`flor-mia-location-${profile.id}`);
     if (!state.locations.some(location => location.id === state.locationId)) state.locationId = state.locations[0].id;
     renderShell(); setupConnectionListeners(); subscribeStock();
     await Promise.all([refreshSales(), refreshPendingSales()]);
     if (navigator.onLine) syncPendingSales();
   } catch (error) {
-    root.innerHTML = `<div class="center-screen"><div class="card"><h2>No se puede abrir el punto de venta</h2><p>${escapeHtml(error.message)}</p><button class="btn btn-ghost" id="seller-fail-logout">Cerrar sesión</button></div></div>`;
-    $("#seller-fail-logout",root).onclick=onLogout;
+    if (panelOptions.canAccessAdmin) {
+      renderShell(false);
+      $("#seller-content",root).innerHTML = `<section class="card seller-blocked"><h2>No se puede abrir el punto de venta</h2><p>${escapeHtml(error.message)}</p><button class="btn btn-primary" id="seller-back-admin">Ver Panel Administrador</button></section>`;
+      $("#seller-back-admin",root).onclick=()=>panelOptions.onPanelChange?.("admin");
+    } else {
+      root.innerHTML = `<div class="center-screen"><div class="card"><h2>No se puede abrir el punto de venta</h2><p>${escapeHtml(error.message)}</p><button class="btn btn-ghost" id="seller-fail-logout">Cerrar sesión</button></div></div>`;
+      $("#seller-fail-logout",root).onclick=onLogout;
+    }
   }
 }
 
 function location() { return state.locations.find(item => item.id === state.locationId); }
 
-function renderShell() {
-  state.root.innerHTML = `<div class="seller-shell"><header class="app-header seller-header"><button id="open-drawer" class="icon-btn" aria-label="Abrir menú">☰</button><div class="seller-title"><strong>Flor Mia</strong><small id="seller-location-name"></small><small class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</small></div><button id="pending-sales-chip" class="pending-sales-chip" type="button">Pendientes: <b data-pending-count>0</b></button></header><div id="drawer-root"></div><main id="seller-content" class="seller-main"></main></div>`;
+function renderShell(renderInitial = true) {
+  state.root.innerHTML = `<div class="seller-shell"><header class="app-header seller-header"><button id="open-drawer" class="icon-btn" aria-label="Abrir menú">☰</button><div class="seller-title"><strong>Flor Mia</strong><small id="seller-location-name"></small><small class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</small></div><button id="pending-sales-chip" class="pending-sales-chip" type="button">Pendientes: <b data-pending-count>0</b></button><div class="header-spacer"></div>${panelSwitcherHtml(state.profile,state.panelOptions,"seller")}</header><div id="drawer-root"></div><main id="seller-content" class="seller-main"></main></div>`;
   $("#open-drawer",state.root).onclick=openDrawer;
   $("#pending-sales-chip",state.root).onclick=async()=>{state.view="pending";await refreshPendingSales();renderView();};
-  updateLocationTitle(); updateConnectionStatus(); updatePendingUi(); renderView();
+  setupPanelSwitcher(state.root,state.panelOptions,"seller");
+  updateLocationTitle(); updateConnectionStatus(); updatePendingUi(); if(renderInitial)renderView();
 }
 
 function updateLocationTitle() { const node=$("#seller-location-name",state.root); if(node)node.textContent=location()?.name||""; }
@@ -68,9 +76,9 @@ function setupConnectionListeners() {
 }
 
 function openDrawer() {
-  const root=$("#drawer-root",state.root);root.innerHTML=`<div class="drawer-backdrop"></div><aside class="drawer"><button class="icon-btn" id="close-drawer" aria-label="Cerrar">×</button><div class="brand">Flor Mia</div><button data-drawer="new">＋ Nueva venta</button><button data-drawer="sales">▤ Mis ventas de hoy</button><button data-drawer="pending">↻ Ventas pendientes (${state.pendingSales.length})</button><button data-drawer="stock">▦ Stock disponible</button><button data-drawer="location">⌖ Cambiar ubicación</button><button data-drawer="help">? Ayuda rápida</button><button data-drawer="connection">● ${navigator.onLine?"Online":"Sin conexión"}</button><button data-drawer="logout">↪ Cerrar sesión</button></aside>`;
+  const root=$("#drawer-root",state.root);root.innerHTML=`<div class="drawer-backdrop"></div><aside class="drawer"><button class="icon-btn" id="close-drawer" aria-label="Cerrar">×</button><div class="brand">Flor Mia</div><button data-drawer="new">＋ Nueva venta</button><button data-drawer="sales">▤ Mis ventas de hoy</button><button data-drawer="pending">↻ Ventas pendientes (${state.pendingSales.length})</button><button data-drawer="stock">▦ Stock disponible</button><button data-drawer="priceList">＄ Lista de Precio</button><button data-drawer="location">⌖ Cambiar ubicación</button><button data-drawer="help">? Ayuda rápida</button><button data-drawer="connection">● ${navigator.onLine?"Online":"Sin conexión"}</button><button data-drawer="logout">↪ Cerrar sesión</button></aside>`;
   const close=()=>root.innerHTML="";$("#close-drawer",root).onclick=close;$(".drawer-backdrop",root).onclick=close;
-  $$('[data-drawer]',root).forEach(button=>button.onclick=async()=>{const action=button.dataset.drawer;close();if(action==="new"){state.view="new";renderView();}if(action==="sales"){state.view="sales";await refreshSales();renderView();}if(action==="pending"){state.view="pending";await refreshPendingSales();renderView();}if(action==="stock"){state.view="stock";renderView();}if(action==="location")chooseLocation();if(action==="help")sellerHelp();if(action==="connection")toast(navigator.onLine?"Tenés conexión a internet":"No hay conexión a internet",navigator.onLine?"success":"error");if(action==="logout")state.onLogout();});
+  $$('[data-drawer]',root).forEach(button=>button.onclick=async()=>{const action=button.dataset.drawer;close();if(action==="new"){state.view="new";renderView();}if(action==="sales"){state.view="sales";await refreshSales();renderView();}if(action==="pending"){state.view="pending";await refreshPendingSales();renderView();}if(action==="stock"){state.view="stock";renderView();}if(action==="priceList"){state.view="priceList";renderView();}if(action==="location")chooseLocation();if(action==="help")sellerHelp();if(action==="connection")toast(navigator.onLine?"Tenés conexión a internet":"No hay conexión a internet",navigator.onLine?"success":"error");if(action==="logout")state.onLogout();});
 }
 
 function sellerHelp(){openModal({title:"Cómo vender",onClose:resumeKeyboard,content:`<ol class="help-steps"><li>Elegí la ubicación correcta.</li><li>Tocá productos o usá la botonera, que ya queda activa.</li><li>Revisá cantidades y descuento.</li><li>Presioná Continuar para registrar.</li></ol><p class="muted">Sin internet, la venta queda pendiente en este dispositivo. Al volver la conexión se sincroniza; también podés hacerlo desde Ventas pendientes.</p>`});}
@@ -82,7 +90,7 @@ function chooseLocation() {
 
 function subscribeStock() {
   state.unsubStock?.(); state.stock=[];
-  state.unsubStock=subscribeLocationStock(state.locationId,items=>{state.stock=items.filter(item=>item.active&&item.deleted!==true);reconcileCart();if(["new","stock"].includes(state.view))renderView();},error=>toast(`No se pudo actualizar el stock: ${error.message}`,"error"));
+  state.unsubStock=subscribeLocationStock(state.locationId,items=>{state.stock=items.filter(item=>item.active&&item.deleted!==true);reconcileCart();if(["new","stock","priceList"].includes(state.view))renderView();},error=>toast(`No se pudo actualizar el stock: ${error.message}`,"error"));
 }
 
 function reconcileCart(){for(const [id,item] of state.cart){const stock=state.stock.find(s=>s.id===id);if(stock){const originalQty=state.editSale?.items?.find(old=>old.productId===id)?.qty||0;item.stock=Number(stock.currentStock)+Number(originalQty);item.thumbUrl=stock.thumbUrl||item.thumbUrl;}}}
@@ -91,6 +99,7 @@ function renderView() {
   if(state.view==="new")return renderNewSale();
   state.keyboard?.destroy();state.keyboard=null;
   if(state.view==="stock")return renderStockAvailable();
+  if(state.view==="priceList")return renderPriceList();
   state.view==="pending"?renderPendingSales():renderSales();
 }
 
@@ -107,7 +116,7 @@ function renderNewSale() {
   $("#clear-cart",content).onclick=async()=>{if(await confirmDialog("¿Querés vaciar el carrito?")){state.cart.clear();state.appliedDiscounts=[];state.paymentMethod=null;state.payments=[];state.stockWarningsAccepted.clear();state.lastProductId=null;renderNewSale();}};
   $$('[data-payment]',content).forEach(button=>button.onclick=async()=>{const method=PAYMENT_METHODS.find(item=>item.value===button.dataset.payment);if(method?.value==="multiple")return multiplePaymentModal();state.paymentMethod=method||null;state.payments=[];renderNewSale();});
   $("#choose-discount",content).onclick=discountModal;
-  $("#ticket-button",state.root).onclick=()=>toast("El botón Tiquet quedó preparado para la futura integración fiscal.");
+  $("#ticket-button",state.root).onclick=ticketAction;
   $("#continue-sale",state.root).onclick=saveSale;$("#cancel-edit",content)?.addEventListener("click",cancelEdit);
   setupKeyboard();
 }
@@ -185,12 +194,45 @@ async function addProduct(id, feedback=false) {
 async function changeQty(id,delta){const item=state.cart.get(id);if(!item)return;const next=item.qty+delta;if(delta>0&&next>item.stock){const product=state.stock.find(stock=>stock.id===id)||item;if(!await confirmStockWarning(product))return;}if(next<=0)state.cart.delete(id);else item.qty=next;if(!state.cart.size)state.appliedDiscounts=[];state.lastProductId=id;renderCartLines();}
 function removeLast(){if(state.lastProductId)changeQty(state.lastProductId,-1);}
 
-function updateKeyboardStateUi(){const hint=$("#key-hint",state.root);const button=$("#activate-keyboard",state.root);if(hint)hint.textContent=state.keyboardActive?"Botonera activa":"Botonera desactivada";if(button){button.textContent=state.keyboardActive?"Desactivar botonera":"Activar botonera";button.className=`btn ${state.keyboardActive?"btn-secondary":"btn-primary"}`;}}
+function updateKeyboardStateUi(){const hint=$("#key-hint",state.root);const button=$("#activate-keyboard",state.root);if(hint)hint.textContent=state.keyboardActive?"Botonera activa":"Botonera desactivada";if(button){button.textContent=state.keyboardActive?"Desactivar":"Activar";button.className=`btn btn-small ${state.keyboardActive?"btn-secondary":"btn-primary"}`;}}
+
+function sellerActionShortcuts(){
+  const saved=state.shortcuts?.sellerActions||{};
+  return SELLER_ACTION_SHORTCUTS.map(action=>({...action,...(saved[action.id]||{})})).filter(action=>action.key||action.code);
+}
+
+function selectPayment(value, feedback=false){
+  const method=PAYMENT_METHODS.find(item=>item.value===value);
+  if(!method)return;
+  state.paymentMethod=method;
+  state.payments=[];
+  renderNewSale();
+  if(feedback)toast(`${method.label} seleccionado`,"success");
+}
+
+function ticketAction(){toast("El botón Tiquet quedó preparado para la futura integración fiscal.");}
+
+function runSellerShortcut(shortcut){
+  if(shortcut.paymentMethod)return selectPayment(shortcut.paymentMethod,true);
+  if(shortcut.action==="ticket")return ticketAction();
+}
+
+function applyDiscount(discount, feedback=false){
+  if(subtotal()<=0)return toast("Agregá productos antes del descuento","error");
+  const value=Number(discount.value);
+  const entry={id:discount.id,discountId:discount.id,name:discount.name,type:discount.type,value,source:"preset"};
+  try{
+    calculateDiscountSummary([...state.appliedDiscounts,entry],subtotal());
+    state.appliedDiscounts.push(entry);
+    renderNewSale();
+    if(feedback)toast(`Descuento aplicado: ${discount.name}`,"success");
+  }catch(error){toast(error.message,"error");}
+}
 
 function setupKeyboard(){
   state.keyboard?.destroy();
   const capture=$("#key-capture",state.root);
-  state.keyboard=new SellerKeyboard({capture,getProducts:()=>state.stock,onProduct:id=>addProduct(id,true),onContinue:saveSale,onBackspace:removeLast,onAdd:()=>state.lastProductId&&changeQty(state.lastProductId,1),onSubtract:removeLast,onFocusChange:updateKeyboardStateUi});
+  state.keyboard=new SellerKeyboard({capture,getProducts:()=>state.stock,getDiscounts:()=>state.discounts,getActionShortcuts:sellerActionShortcuts,onProduct:id=>addProduct(id,true),onDiscount:discount=>applyDiscount(discount,true),onShortcut:runSellerShortcut,onContinue:saveSale,onBackspace:removeLast,onAdd:()=>state.lastProductId&&changeQty(state.lastProductId,1),onSubtract:removeLast,onFocusChange:updateKeyboardStateUi});
   $("#activate-keyboard",state.root).onclick=()=>{state.keyboardActive=!state.keyboardActive;state.keyboardActive?state.keyboard.activate():state.keyboard.pause();updateKeyboardStateUi();};
   state.keyboardActive?state.keyboard.activate():state.keyboard.pause();
 }
@@ -372,6 +414,15 @@ function renderStockAvailable(){
   const status=item=>Number(item.currentStock)<=Number(item.redAlertQty)?{className:"danger",label:"Alerta roja"}:Number(item.currentStock)<=Number(item.yellowAlertQty)?{className:"warning",label:"Alerta amarilla"}:{className:"ok",label:"Stock normal"};
   content.innerHTML=`<div class="page-head"><div><h1>Stock disponible</h1><p class="muted">${escapeHtml(location()?.name||"")}</p></div><button id="stock-back-new" class="btn btn-primary">Nueva venta</button></div><div class="stock-view-grid">${state.stock.map(item=>{const alert=status(item);return `<article class="card stock-view-card"><img loading="lazy" src="${imageOrPlaceholder(item.thumbUrl,item.abbreviation)}" alt=""><div><strong>${escapeHtml(item.productName)}</strong><small>${escapeHtml(item.abbreviation)} · ${money(item.price)}</small><span class="badge ${alert.className}">${alert.label}</span></div><b>${Number(item.currentStock)} u.</b></article>`;}).join("")||`<div class="empty">No hay productos habilitados en esta ubicación</div>`}</div>`;
   $("#stock-back-new",content).onclick=()=>{state.view="new";renderView();};
+}
+
+function renderPriceList(){
+  const content=$("#seller-content",state.root);if(!content)return;
+  const available=state.stock.filter(item=>item.active!==false&&item.deleted!==true&&item.productDeleted!==true&&Number(item.currentStock)>0);
+  const productGroups=groupByCategory(available,state.productCategories,{getCategoryId:item=>item.categoryId,getCategoryName:item=>item.categoryName});
+  const sections=productGroups.map(group=>`<section class="price-category"><h2>${escapeHtml(group.name)}</h2><div class="price-items">${group.items.sort((a,b)=>(a.productName||"").localeCompare(b.productName||"")).map(item=>`<article class="price-item"><div><strong>${escapeHtml(item.abbreviation||item.productName)}</strong><small>${escapeHtml(item.productName)}</small></div><div class="price-value"><strong>${money(item.price)}</strong><small>${Number(item.currentStock)} u.</small></div></article>`).join("")}</div></section>`).join("");
+  content.innerHTML=`<div class="page-head"><div><h1>Lista de Precio</h1><p class="muted">${escapeHtml(location()?.name||"")}</p></div><button id="price-back-new" class="btn btn-primary">Nueva venta</button></div>${sections||`<div class="empty">No hay productos con stock disponible en esta ubicación</div>`}`;
+  $("#price-back-new",content).onclick=()=>{state.view="new";renderView();};
 }
 
 function saleDetail(sale){const discounts=saleDiscountList(sale),discountTotal=storedDiscountTotal(sale),subtotal=Number(sale.totalBeforeDiscounts??sale.subtotal??sale.total);const modal=openModal({title:sale.saleCode,content:`<p>${dateTime(sale.createdAt)}<br>${escapeHtml(sale.locationName)} · ${escapeHtml(sale.paymentMethodLabel||"Sin forma de pago")}</p>${paymentDetailsHtml(sale)}${sale.items.map(item=>`<div class="total-line"><span>${item.qty} × ${escapeHtml(item.name)}</span><strong>${money(item.subtotal)}</strong></div>`).join("")}<div class="total-line"><span>Subtotal</span><strong>${money(subtotal)}</strong></div>${discounts.map(discount=>`<div class="total-line discount-line"><span>${escapeHtml(discount.name||"Descuento")}</span><strong>− ${money(discount.amountApplied||0)}</strong></div>`).join("")}${discounts.length?`<div class="total-line discount-line"><span>Total descuentos</span><strong>− ${money(discountTotal)}</strong></div>`:""}<div class="total-line grand"><span>Total</span><strong>${money(sale.total)}</strong></div>${sale.status==="active"?`<div class="modal-actions"><button id="delete-sale" class="btn btn-danger">Anular</button><button id="edit-sale" class="btn btn-secondary">Editar</button></div>`:'<p class="badge danger">Venta anulada</p>'}`});$("#edit-sale",modal.root)?.addEventListener("click",()=>{modal.close();startEdit(sale);});$("#delete-sale",modal.root)?.addEventListener("click",async()=>{if(!await confirmDialog("¿Querés anular esta venta? Se devolverán las unidades al stock."))return;try{await deleteSaleTransaction({saleId:sale.id,user:state.profile});modal.close();await refreshSales();renderSales();toast("Venta anulada y stock devuelto","success");}catch(error){toast(error.message,"error");}});}

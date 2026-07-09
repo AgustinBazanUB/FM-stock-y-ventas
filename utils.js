@@ -136,3 +136,34 @@ export function formDataObject(form) {
 }
 
 export const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+export function panelLabel(panel) {
+  return panel === "admin" ? "Panel Administrador" : "Panel Vendedor";
+}
+
+export function panelSwitcherHtml(profile, options = {}, prefix = "panel") {
+  const label = panelLabel(options.currentPanel);
+  const content = `<strong>${escapeHtml(profile.name || profile.email || "Usuario")}</strong><span>${escapeHtml(label)}</span>`;
+  if (!options.canAccessAdmin) return `<div class="user-chip panel-chip-static">${content}</div>`;
+  return `<div class="panel-switcher"><button id="${prefix}-panel-switch" class="user-chip panel-chip" type="button" aria-haspopup="menu" aria-expanded="false">${content}</button><div id="${prefix}-panel-menu" class="panel-menu hidden" role="menu"><button type="button" data-panel-target="admin" role="menuitem">Ver Panel Administrador</button><button type="button" data-panel-target="seller" role="menuitem">Ver Panel Vendedor</button></div></div>`;
+}
+
+export function setupPanelSwitcher(root, options = {}, prefix = "panel") {
+  const trigger = $(`#${prefix}-panel-switch`, root);
+  const menu = $(`#${prefix}-panel-menu`, root);
+  if (!trigger || !menu || !options.canAccessAdmin) return;
+  const close = () => {
+    menu.classList.add("hidden");
+    trigger.setAttribute("aria-expanded", "false");
+  };
+  trigger.addEventListener("click", event => {
+    event.stopPropagation();
+    const open = menu.classList.toggle("hidden") === false;
+    trigger.setAttribute("aria-expanded", String(open));
+    if (open) setTimeout(() => document.addEventListener("click", close, {once:true}), 0);
+  });
+  $$("[data-panel-target]", menu).forEach(button => button.addEventListener("click", () => {
+    close();
+    options.onPanelChange?.(button.dataset.panelTarget);
+  }));
+}
