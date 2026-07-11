@@ -1,13 +1,13 @@
 name: Apply summary v23
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/resumen-diario-stock-sin-duplicados
-    paths:
-      - scripts/apply-summary-v23.py
-      - scripts/test-summary-v23.mjs
-      - .github/workflows/apply-summary-v23.yml
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   contents: write
@@ -41,14 +41,16 @@ jobs:
           unexpected=changed-allowed
           if unexpected:
               raise SystemExit(f"Archivos inesperados: {sorted(unexpected)}")
-          if not changed:
-              raise SystemExit("El parche no produjo cambios")
-          print("Archivos permitidos:", sorted(changed))
+          print("Cambios generados en esta ejecución:", sorted(changed))
           PY
           git diff --check
           git diff --exit-code origin/main -- seller.js firebase-config.js firebase-service.js auth.js payments.js discounts.js offline-sales.js metrics.js firestore.rules firestore.indexes.json
-      - name: Commit validated implementation
+      - name: Commit validated implementation when needed
         run: |
+          if git diff --quiet; then
+            echo "La implementación validada ya estaba aplicada."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add admin.js styles.css index.html app.js service-worker.js
