@@ -83,9 +83,11 @@ elif not all(marker in admin for marker in ("tomorrowStart.setDate", "bindStockR
 
 stock_css = r'''.stock-remaining-card h3{display:flex;justify-content:space-between;gap:10px}.stock-remaining-toggle{width:100%;min-height:44px;margin:0 0 8px;justify-content:center}.stock-remaining-list{list-style:none;margin:0;padding:0;min-width:0}.stock-remaining-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}.stock-remaining-list li[hidden]{display:none!important}.stock-remaining-list li>span{min-width:0}.stock-remaining-list strong,.stock-remaining-list small{display:block;overflow-wrap:anywhere;word-break:normal}.stock-remaining-list small{color:var(--muted);font-size:.75rem}.stock-remaining-list b{white-space:nowrap;align-self:center}.stock-remaining-list .negative b{color:var(--red)}.stock-remaining-list .zero b{color:var(--yellow)}'''
 if ".stock-remaining-toggle{" not in styles:
-    styles, count = re.subn(r'\.stock-remaining-card h3\{.*?\}\.metrics-filter-card', stock_css + '.metrics-filter-card', styles, count=1, flags=re.S)
-    if count != 1:
-        raise SystemExit(f"No se pudieron reemplazar los estilos de stock: {count} coincidencias")
+    start=styles.find(".stock-remaining-card h3{")
+    end=styles.find(".metrics-filter-card",start)
+    if start<0 or end<0:
+        raise SystemExit(f"No se encontraron los límites seguros de estilos: start={start}, end={end}")
+    styles=styles[:start]+stock_css+styles[end:]
 if "Resumen diario y stock único v23" not in styles:
     styles = styles.replace('/* Flor Mia responsive v22 */', '/* Flor Mia responsive v22 */\n/* Resumen diario y stock único v23 */', 1)
 
