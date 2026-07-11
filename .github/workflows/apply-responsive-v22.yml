@@ -7,6 +7,12 @@ on:
     paths:
       - scripts/apply-responsive-v22.py
       - .github/workflows/apply-responsive-v22.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/apply-responsive-v22.py
+      - .github/workflows/apply-responsive-v22.yml
 
 permissions:
   contents: write
