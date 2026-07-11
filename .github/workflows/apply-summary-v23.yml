@@ -24,23 +24,7 @@ jobs:
         with:
           node-version: '22'
       - name: Apply scoped patch
-        id: apply
-        continue-on-error: true
-        run: python scripts/apply-summary-v23.py > apply-summary-v23.log 2>&1
-      - name: Save apply diagnostic
-        if: steps.apply.outcome == 'failure'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apply-summary-v23.log
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "Guardar diagnóstico temporal del resumen"
-          git push
-      - name: Report apply failure
-        if: steps.apply.outcome == 'failure'
-        run: |
-          cat apply-summary-v23.log
-          exit 1
+        run: python scripts/apply-summary-v23.py
       - name: Validate JavaScript syntax
         run: |
           node --check admin.js
