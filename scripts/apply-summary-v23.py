@@ -73,16 +73,21 @@ function renderSummary() {
 
 function rankList'''
 
-pattern = re.compile(r'function metrics\(\) \{.*?\n\}\n\nfunction stockRemainingList\(\) \{.*?\n\}\n\nfunction renderSummary\(\) \{.*?\n\}\n\nfunction rankList', re.S)
-admin, count = pattern.subn(replacement, admin, count=1)
-if count != 1:
-    raise SystemExit(f"No se pudo reemplazar el bloque de Resumen: {count} coincidencias")
+if "function saleCreatedAtDate(sale)" not in admin:
+    pattern = re.compile(r'function metrics\(\) \{.*?\n\}\n\nfunction stockRemainingList\(\) \{.*?\n\}\n\nfunction renderSummary\(\) \{.*?\n\}\n\nfunction rankList', re.S)
+    admin, count = pattern.subn(replacement, admin, count=1)
+    if count != 1:
+        raise SystemExit(f"No se pudo reemplazar el bloque de Resumen: {count} coincidencias")
+elif not all(marker in admin for marker in ("tomorrowStart.setDate", "bindStockRemainingToggle(content)", "stock-remaining-toggle")):
+    raise SystemExit("El bloque de Resumen parece estar aplicado parcialmente")
 
 stock_css = r'''.stock-remaining-card h3{display:flex;justify-content:space-between;gap:10px}.stock-remaining-toggle{width:100%;min-height:44px;margin:0 0 8px;justify-content:center}.stock-remaining-list{list-style:none;margin:0;padding:0;min-width:0}.stock-remaining-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}.stock-remaining-list li[hidden]{display:none!important}.stock-remaining-list li>span{min-width:0}.stock-remaining-list strong,.stock-remaining-list small{display:block;overflow-wrap:anywhere;word-break:normal}.stock-remaining-list small{color:var(--muted);font-size:.75rem}.stock-remaining-list b{white-space:nowrap;align-self:center}.stock-remaining-list .negative b{color:var(--red)}.stock-remaining-list .zero b{color:var(--yellow)}'''
-styles, count = re.subn(r'\.stock-remaining-card h3\{.*?\}\.metrics-filter-card', stock_css + '.metrics-filter-card', styles, count=1, flags=re.S)
-if count != 1:
-    raise SystemExit(f"No se pudieron reemplazar los estilos de stock: {count} coincidencias")
-styles = styles.replace('/* Flor Mia responsive v22 */', '/* Flor Mia responsive v22 */\n/* Resumen diario y stock único v23 */', 1)
+if ".stock-remaining-toggle{" not in styles:
+    styles, count = re.subn(r'\.stock-remaining-card h3\{.*?\}\.metrics-filter-card', stock_css + '.metrics-filter-card', styles, count=1, flags=re.S)
+    if count != 1:
+        raise SystemExit(f"No se pudieron reemplazar los estilos de stock: {count} coincidencias")
+if "Resumen diario y stock único v23" not in styles:
+    styles = styles.replace('/* Flor Mia responsive v22 */', '/* Flor Mia responsive v22 */\n/* Resumen diario y stock único v23 */', 1)
 
 ADMIN.write_text(admin, encoding="utf-8", newline="\n")
 STYLES.write_text(styles, encoding="utf-8", newline="\n")
@@ -105,4 +110,4 @@ for name,needles in required.items():
         if needle not in text:raise SystemExit(f"Falta {needle!r} en {name}")
 if "stock-remaining-details" in admin or "<details class=\"stock-remaining-details\"" in admin:
     raise SystemExit("La implementación anterior con details sigue presente")
-print("Parche v23 aplicado correctamente")
+print("Parche v23 aplicado o ya presente correctamente")
