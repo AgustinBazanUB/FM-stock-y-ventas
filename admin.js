@@ -44,7 +44,12 @@ export async function renderAdmin(root, profile, onLogout, panelOptions = {}) {
 }
 
 function shell(profile, panelOptions) {
-  return `<header class="app-header"><div class="logo">Flor Mia</div><select id="admin-location" aria-label="Ubicación activa"><option>Cargando…</option></select><div class="header-spacer"></div><div class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</div>${panelSwitcherHtml(profile, panelOptions, "admin")}<button id="admin-logout" class="btn btn-ghost btn-small">Salir</button></header>
+  return `<header class="app-header admin-header">
+    <div class="logo">Flor Mia</div>
+    <div class="admin-location-context"><span class="admin-header-label">Ubicación actual</span><strong id="admin-current-location-name" class="admin-current-location-name">Cargando…</strong><select id="admin-location" aria-label="Cambiar ubicación activa"><option>Cargando…</option></select></div>
+    <div class="admin-quick-actions" aria-label="Accesos rápidos"><button type="button" class="btn btn-ghost btn-small admin-quick-link active" data-section="summary" aria-current="page">Resumen</button><button type="button" class="btn btn-ghost btn-small admin-quick-link" data-section="stock">Cargar Stock</button></div>
+    <div class="connection ${navigator.onLine ? "" : "offline"}" data-connection-status>${navigator.onLine ? "Online" : "Sin conexión"}</div>${panelSwitcherHtml(profile, panelOptions, "admin")}<button id="admin-logout" class="btn btn-ghost btn-small">Salir</button>
+  </header>
   <div class="admin-layout"><nav class="side-nav" aria-label="Administración">
     <button data-section="summary" class="active">Resumen</button><button data-section="metrics">Métricas</button><button data-section="locations">Ubicaciones</button><button data-section="products">Productos</button><button data-section="stock">Cargar Stock</button><button data-section="sellers">Vendedores</button><button data-section="discounts">Descuentos</button><button data-section="shortcuts">Atajos</button><button data-section="sales">Ventas</button><button data-section="deletedItems">Items Eliminados</button><button data-section="exports">Exportar</button><button data-section="help">Ayuda</button>
   </nav><main id="admin-content" class="page"><div class="empty">Cargando información…</div></main></div>`;
@@ -56,7 +61,10 @@ function renderLocationSelector() {
   const locations=activeLocations();
   const options=selected&&!locations.some(location=>location.id===selected.id)?[selected,...locations]:locations;
   select.innerHTML = options.length ? options.map(location => `<option value="${location.id}" ${location.id === state.selectedLocationId ? "selected" : ""}>${escapeHtml(location.name)}${isLocationActiveNow(location)?"":" · inactiva"}</option>`).join("") : `<option value="">Sin ubicaciones</option>`;
-  select.onchange = () => { state.selectedLocationId = select.value; state.salesLimit=200; subscribeSelected(); renderSection(); };
+  const current=options.find(location=>location.id===state.selectedLocationId)||selected;
+  const currentName=current?.name||"Sin ubicación";
+  const nameNode=$("#admin-current-location-name",state.root);if(nameNode){nameNode.textContent=currentName;nameNode.title=currentName;}select.title=currentName;
+  select.onchange = () => { state.selectedLocationId = select.value; state.salesLimit=200; renderLocationSelector(); subscribeSelected(); renderSection(); };
 }
 
 function subscribeSelected() {
@@ -68,7 +76,7 @@ function subscribeSelected() {
 
 function switchSection(section) {
   state.section = section;
-  $$("[data-section]", state.root).forEach(button => button.classList.toggle("active", button.dataset.section === section));
+  $$('[data-section]', state.root).forEach(button => {const active=button.dataset.section===section;button.classList.toggle('active',active);if(button.classList.contains('admin-quick-link')){if(active)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');}});
   renderSection();
 }
 
@@ -223,12 +231,21 @@ function metrics() {
   return {active,total,items,ticket:active.length ? total/active.length : 0,todayTotal,todayCount:today.length, products:sorted(products), sellers:sorted(sellers), hours:[...hours].sort(),paymentRows};
 }
 
+function stockRemainingList() {
+  const rows=state.stock.filter(item=>item.active===true).map(item=>({name:item.abbreviation||item.productName||"Sin nombre",productName:item.productName||"",value:Number(item.currentStock||0)})).sort((a,b)=>a.value-b.value||String(a.name).localeCompare(String(b.name)));
+  if(!rows.length)return `<div class="empty">No hay productos habilitados en esta ubicación</div>`;
+  const rowHtml=row=>`<li class="${row.value<0?"negative":row.value===0?"zero":"positive"}"><span><strong>${escapeHtml(row.name)}</strong>${row.productName&&row.productName!==row.name?`<small>${escapeHtml(row.productName)}</small>`:""}</span><b>${row.value} u.</b></li>`;
+  const preview=rows.slice(0,Math.min(6,rows.length)),previewHtml=`<ol class="stock-remaining-list stock-remaining-preview">${preview.map(rowHtml).join("")}</ol>`;
+  if(rows.length<=preview.length)return previewHtml;
+  return `${previewHtml}<details class="stock-remaining-details"><summary aria-label="Mostrar u ocultar todo el stock"><span class="stock-open-label">Ver todo el stock</span><span class="stock-close-label">Ocultar lista completa</span><small>${rows.length} productos</small></summary><div class="stock-remaining-scroll"><ol class="stock-remaining-list">${rows.map(rowHtml).join("")}</ol></div></details>`;
+}
+
 function renderSummary() {
   const content = $("#admin-content", state.root); const m = metrics();
   content.innerHTML = `<div class="page-head"><h1>Resumen · ${escapeHtml(currentLocation()?.name || "Sin ubicación")}</h1></div>${alertHtml()}
   <div class="cards"><div class="card metric"><strong>${money(m.todayTotal)}</strong><span>Total de hoy (${m.todayCount} ventas)</span></div><div class="card metric"><strong>${money(m.total)}</strong><span>Total de la ubicación/evento</span></div><div class="card metric"><strong>${m.active.length}</strong><span>Ventas</span></div><div class="card metric"><strong>${m.items}</strong><span>Productos vendidos</span></div><div class="card metric"><strong>${money(m.ticket)}</strong><span>Ticket promedio</span></div></div>
   <section class="card payment-summary" style="margin-top:13px"><h3>Ventas por forma de pago</h3><div class="cards">${m.paymentRows.map(row=>`<div class="payment-metric"><span>${escapeHtml(row.label)}</span><strong>${money(row.total)}</strong><small>${row.count} ${row.count===1?"venta":"ventas"}</small></div>`).join("")}</div></section>
-  <div class="cards" style="margin-top:13px"><section class="card"><h3>Productos más vendidos</h3>${rankList(m.products, value => `${value} u.`)}</section><section class="card"><h3>Ventas por vendedor</h3>${rankList(m.sellers, money)}</section><section class="card"><h3>Ventas por hora</h3>${rankList(m.hours, money)}</section><section class="card"><h3>Stock restante</h3>${rankList(state.stock.map(item => [item.abbreviation || item.productName,Number(item.currentStock)]).sort((a,b)=>a[1]-b[1]), value => `${value} u.`)}</section></div>`;
+  <div class="cards" style="margin-top:13px"><section class="card"><h3>Productos más vendidos</h3>${rankList(m.products, value => `${value} u.`)}</section><section class="card"><h3>Ventas por vendedor</h3>${rankList(m.sellers, money)}</section><section class="card"><h3>Ventas por hora</h3>${rankList(m.hours, money)}</section><section class="card stock-remaining-card"><h3>Stock restante <span class="badge">${state.stock.filter(item=>item.active===true).length} productos</span></h3>${stockRemainingList()}</section></div>`;
 }
 
 function rankList(rows, formatter) {
