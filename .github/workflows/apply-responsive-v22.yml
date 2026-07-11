@@ -37,9 +37,15 @@ jobs:
           node --check app.js
           node --check service-worker.js
       - name: Validate scope
+        shell: bash
         run: |
-          git diff --exit-code -- firestore.rules firestore.indexes.json firebase-config.js firebase-service.js
-          git diff --check
+          allowed='^(admin\.js|seller\.js|styles\.css|index\.html|app\.js|service-worker\.js)$'
+          unexpected="$(git diff --name-only | grep -Ev "$allowed" || true)"
+          if [ -n "$unexpected" ]; then
+            echo "Archivos inesperados modificados:"
+            echo "$unexpected"
+            exit 1
+          fi
       - name: Commit generated changes
         run: |
           git config user.name "github-actions[bot]"
