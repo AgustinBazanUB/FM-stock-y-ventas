@@ -209,18 +209,28 @@ function productTable(products) {
   return `<div class="table-wrap"><table class="responsive"><thead><tr><th></th><th>Producto</th><th>Abrev.</th><th>Precio</th><th>Botonera</th><th>Estado</th><th></th></tr></thead><tbody>${products.map(product=>`<tr><td data-label="Imagen"><img class="thumb" loading="lazy" src="${imageOrPlaceholder(product.thumbUrl,product.abbreviation)}" alt=""></td><td data-label="Producto">${escapeHtml(product.name)}</td><td data-label="Abrev.">${escapeHtml(product.abbreviation)}</td><td data-label="Precio">${money(product.defaultPrice)}</td><td data-label="Botonera">${escapeHtml(product.buttonLabel||"—")}</td><td data-label="Estado">${productStatusBadge(product)}</td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-product="${product.id}">Editar</button><button class="btn btn-danger btn-small" data-delete-product="${product.id}">Eliminar producto</button></div></td></tr>`).join("")||`<tr><td colspan="7"><div class="empty">No hay productos en esta categoría</div></td></tr>`}</tbody></table></div>`;
 }
 
+function saleCreatedAtDate(sale) {
+  const value=sale?.createdAt;
+  if(!value)return null;
+  try{
+    const date=typeof value?.toDate==="function"?value.toDate():value instanceof Date?new Date(value.getTime()):new Date(value);
+    return date instanceof Date&&!Number.isNaN(date.valueOf())?date:null;
+  }catch(_){return null;}
+}
+
 function metrics() {
   const active = state.sales.filter(sale => sale.status === "active");
-  const total = active.reduce((sum,sale) => sum + Number(sale.total || 0),0);
-  const items = active.reduce((sum,sale) => sum + Number(sale.totalItems || 0),0);
   const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-  const today = active.filter(sale => sale.createdAt?.toDate?.() >= todayStart);
+  const tomorrowStart = new Date(todayStart); tomorrowStart.setDate(tomorrowStart.getDate()+1);
+  const today = active.filter(sale => {const date=saleCreatedAtDate(sale);return date&&date>=todayStart&&date<tomorrowStart;});
+  const total = active.reduce((sum,sale) => sum + Number(sale.total || 0),0);
   const todayTotal = today.reduce((sum,sale) => sum + Number(sale.total || 0),0);
+  const items = today.reduce((sum,sale) => sum + Number(sale.totalItems || 0),0);
   const products = new Map(); const sellers = new Map(); const hours = new Map(); const payments = new Map();
-  active.forEach(sale => {
+  today.forEach(sale => {
     sale.items?.forEach(item => products.set(item.name, (products.get(item.name)||0) + Number(item.qty)));
     sellers.set(sale.sellerName, (sellers.get(sale.sellerName)||0) + Number(sale.total||0));
-    const date = sale.createdAt?.toDate?.(); const hour = date ? `${String(date.getHours()).padStart(2,"0")}:00` : "Pendiente";
+    const date = saleCreatedAtDate(sale); const hour = date ? `${String(date.getHours()).padStart(2,"0")}:00` : "Pendiente";
     hours.set(hour,(hours.get(hour)||0)+Number(sale.total||0));
     const parts=salePaymentParts(sale);
     if(parts.length){parts.forEach(part=>{const payment=payments.get(part.method)||{key:part.method,label:part.label,total:0,count:0};payment.total+=part.amount;payment.count+=1;payments.set(part.method,payment);});}
@@ -228,24 +238,39 @@ function metrics() {
   });
   const sorted = map => [...map].sort((a,b) => b[1]-a[1]);
   const paymentRows=["credit","debit","alias","cash","unknown"].map(key=>payments.get(key)||{key,label:PAYMENT_LABELS[key],total:0,count:0}).filter(row=>row.key!=="unknown"||row.count>0);
-  return {active,total,items,ticket:active.length ? total/active.length : 0,todayTotal,todayCount:today.length, products:sorted(products), sellers:sorted(sellers), hours:[...hours].sort(),paymentRows};
+  return {active,today,total,items,ticket:today.length ? todayTotal/today.length : 0,todayTotal,todayCount:today.length, products:sorted(products), sellers:sorted(sellers), hours:[...hours].sort(),paymentRows};
 }
 
 function stockRemainingList() {
   const rows=state.stock.filter(item=>item.active===true).map(item=>({name:item.abbreviation||item.productName||"Sin nombre",productName:item.productName||"",value:Number(item.currentStock||0)})).sort((a,b)=>a.value-b.value||String(a.name).localeCompare(String(b.name)));
   if(!rows.length)return `<div class="empty">No hay productos habilitados en esta ubicación</div>`;
-  const rowHtml=row=>`<li class="${row.value<0?"negative":row.value===0?"zero":"positive"}"><span><strong>${escapeHtml(row.name)}</strong>${row.productName&&row.productName!==row.name?`<small>${escapeHtml(row.productName)}</small>`:""}</span><b>${row.value} u.</b></li>`;
-  const preview=rows.slice(0,Math.min(6,rows.length)),previewHtml=`<ol class="stock-remaining-list stock-remaining-preview">${preview.map(rowHtml).join("")}</ol>`;
-  if(rows.length<=preview.length)return previewHtml;
-  return `${previewHtml}<details class="stock-remaining-details"><summary aria-label="Mostrar u ocultar todo el stock"><span class="stock-open-label">Ver todo el stock</span><span class="stock-close-label">Ocultar lista completa</span><small>${rows.length} productos</small></summary><div class="stock-remaining-scroll"><ol class="stock-remaining-list">${rows.map(rowHtml).join("")}</ol></div></details>`;
+  const listId="stock-remaining-list",hasMore=rows.length>6;
+  const button=hasMore?`<button type="button" id="stock-remaining-toggle" class="btn btn-ghost stock-remaining-toggle" aria-controls="${listId}" aria-expanded="false">Ver todo el stock</button>`:"";
+  const rowHtml=(row,index)=>`<li class="${row.value<0?"negative":row.value===0?"zero":"positive"}" ${index>=6?"data-stock-extra hidden":""}><span><strong>${escapeHtml(row.name)}</strong>${row.productName&&row.productName!==row.name?`<small>${escapeHtml(row.productName)}</small>`:""}</span><b>${row.value} u.</b></li>`;
+  return `${button}<ol id="${listId}" class="stock-remaining-list">${rows.map(rowHtml).join("")}</ol>`;
+}
+
+function bindStockRemainingToggle(root) {
+  const button=$("#stock-remaining-toggle",root);if(!button)return;
+  const list=$(`#${button.getAttribute("aria-controls")}`,root);if(!list)return;
+  const extraRows=$$("[data-stock-extra]",list);
+  button.onclick=()=>{
+    const expanded=button.getAttribute("aria-expanded")==="true",nextExpanded=!expanded;
+    extraRows.forEach(row=>row.hidden=!nextExpanded);
+    button.setAttribute("aria-expanded",String(nextExpanded));
+    button.textContent=nextExpanded?"Minimizar":"Ver todo el stock";
+    list.classList.toggle("is-expanded",nextExpanded);
+    if(!nextExpanded)requestAnimationFrame(()=>{const rect=button.getBoundingClientRect();if(rect.top<0||rect.bottom>window.innerHeight)button.scrollIntoView({behavior:"smooth",block:"nearest"});});
+  };
 }
 
 function renderSummary() {
   const content = $("#admin-content", state.root); const m = metrics();
   content.innerHTML = `<div class="page-head"><h1>Resumen · ${escapeHtml(currentLocation()?.name || "Sin ubicación")}</h1></div>${alertHtml()}
-  <div class="cards"><div class="card metric"><strong>${money(m.todayTotal)}</strong><span>Total de hoy (${m.todayCount} ventas)</span></div><div class="card metric"><strong>${money(m.total)}</strong><span>Total de la ubicación/evento</span></div><div class="card metric"><strong>${m.active.length}</strong><span>Ventas</span></div><div class="card metric"><strong>${m.items}</strong><span>Productos vendidos</span></div><div class="card metric"><strong>${money(m.ticket)}</strong><span>Ticket promedio</span></div></div>
+  <div class="cards"><div class="card metric"><strong>${money(m.todayTotal)}</strong><span>Total de hoy (${m.todayCount} ventas)</span></div><div class="card metric"><strong>${money(m.total)}</strong><span>Total de la ubicación/evento</span></div><div class="card metric"><strong>${m.todayCount}</strong><span>Ventas</span></div><div class="card metric"><strong>${m.items}</strong><span>Productos vendidos</span></div><div class="card metric"><strong>${money(m.ticket)}</strong><span>Ticket promedio</span></div></div>
   <section class="card payment-summary" style="margin-top:13px"><h3>Ventas por forma de pago</h3><div class="cards">${m.paymentRows.map(row=>`<div class="payment-metric"><span>${escapeHtml(row.label)}</span><strong>${money(row.total)}</strong><small>${row.count} ${row.count===1?"venta":"ventas"}</small></div>`).join("")}</div></section>
   <div class="cards" style="margin-top:13px"><section class="card"><h3>Productos más vendidos</h3>${rankList(m.products, value => `${value} u.`)}</section><section class="card"><h3>Ventas por vendedor</h3>${rankList(m.sellers, money)}</section><section class="card"><h3>Ventas por hora</h3>${rankList(m.hours, money)}</section><section class="card stock-remaining-card"><h3>Stock restante <span class="badge">${state.stock.filter(item=>item.active===true).length} productos</span></h3>${stockRemainingList()}</section></div>`;
+  bindStockRemainingToggle(content);
 }
 
 function rankList(rows, formatter) {
