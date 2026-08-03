@@ -100,5 +100,101 @@
     "name": "Aceite Blend 5 litros · IMG 7395",
     "imageUrl": "/assets/products/producto-img-7395.jpg",
     "thumbUrl": "/assets/products/producto-img-7395-thumb.jpg"
+  },
+  {
+    "id": "producto-aceitunas-negras-gema-oliv-1kg",
+    "name": "Aceitunas negras Gema Oliv 1 kg",
+    "imageUrl": "/assets/products/producto-aceitunas-negras-gema-oliv-1kg.jpg",
+    "thumbUrl": "/assets/products/producto-aceitunas-negras-gema-oliv-1kg-thumb.jpg"
+  },
+  {
+    "id": "producto-pasta-aceitunas-verdes-tia-clara-220g",
+    "name": "Pasta de aceitunas verdes Tía Clara 220 g",
+    "imageUrl": "/assets/products/producto-pasta-aceitunas-verdes-tia-clara-220g.jpg",
+    "thumbUrl": "/assets/products/producto-pasta-aceitunas-verdes-tia-clara-220g-thumb.jpg"
+  },
+  {
+    "id": "producto-pasta-aceitunas-negras-tia-clara-220g",
+    "name": "Pasta de aceitunas negras Tía Clara 220 g",
+    "imageUrl": "/assets/products/producto-pasta-aceitunas-negras-tia-clara-220g.jpg",
+    "thumbUrl": "/assets/products/producto-pasta-aceitunas-negras-tia-clara-220g-thumb.jpg"
+  },
+  {
+    "id": "producto-vino-bazan-malbec-2024",
+    "name": "Vino Bazan Malbec 2024",
+    "imageUrl": "/assets/products/producto-vino-bazan-malbec-2024.jpg",
+    "thumbUrl": "/assets/products/producto-vino-bazan-malbec-2024-thumb.jpg"
+  },
+  {
+    "id": "producto-sal-malbec-ruru-y-yuyu",
+    "name": "Sal Malbec Ruru y Yuyu",
+    "imageUrl": "/assets/products/producto-sal-malbec-ruru-y-yuyu.jpg",
+    "thumbUrl": "/assets/products/producto-sal-malbec-ruru-y-yuyu-thumb.jpg"
+  },
+  {
+    "id": "producto-emulsion-corporal-olibec",
+    "name": "Emulsión corporal Olibec",
+    "imageUrl": "/assets/products/producto-emulsion-corporal-olibec.jpg",
+    "thumbUrl": "/assets/products/producto-emulsion-corporal-olibec-thumb.jpg"
+  },
+  {
+    "id": "producto-mermelada-peras-tia-clara-400g",
+    "name": "Mermelada de peras Tía Clara 400 g",
+    "imageUrl": "/assets/products/producto-mermelada-peras-tia-clara-400g.jpg",
+    "thumbUrl": "/assets/products/producto-mermelada-peras-tia-clara-400g-thumb.jpg"
+  },
+  {
+    "id": "producto-mermelada-pimiento-tia-clara-220g",
+    "name": "Mermelada de pimiento Tía Clara 220 g",
+    "imageUrl": "/assets/products/producto-mermelada-pimiento-tia-clara-220g.jpg",
+    "thumbUrl": "/assets/products/producto-mermelada-pimiento-tia-clara-220g-thumb.jpg"
+  },
+  {
+    "id": "producto-aceitunas-verdes-gema-oliv-1700g",
+    "name": "Aceitunas verdes Gema Oliv 1.700 g",
+    "imageUrl": "/assets/products/producto-aceitunas-verdes-gema-oliv-1700g.jpg",
+    "thumbUrl": "/assets/products/producto-aceitunas-verdes-gema-oliv-1700g-thumb.jpg"
+  },
+  {
+    "id": "producto-aceitunas-verdes-gema-oliv-500g",
+    "name": "Aceitunas verdes Gema Oliv 500 g",
+    "imageUrl": "/assets/products/producto-aceitunas-verdes-gema-oliv-500g.jpg",
+    "thumbUrl": "/assets/products/producto-aceitunas-verdes-gema-oliv-500g-thumb.jpg"
+  },
+  {
+    "id": "producto-vino-extramuros-cabernet-sauvignon",
+    "name": "Vino Extramuros Cabernet Sauvignon",
+    "imageUrl": "/assets/products/producto-vino-extramuros-cabernet-sauvignon.jpg",
+    "thumbUrl": "/assets/products/producto-vino-extramuros-cabernet-sauvignon-thumb.jpg"
+  },
+  {
+    "id": "producto-vino-suipacha-reserva-otero-ramos",
+    "name": "Vino Suipacha Reserva Otero Ramos",
+    "imageUrl": "/assets/products/producto-vino-suipacha-reserva-otero-ramos.jpg",
+    "thumbUrl": "/assets/products/producto-vino-suipacha-reserva-otero-ramos-thumb.jpg"
+  },
+  {
+    "id": "producto-vino-caritos-estate-malbec",
+    "name": "Vino Caritos Estate Malbec",
+    "imageUrl": "/assets/products/producto-vino-caritos-estate-malbec.jpg",
+    "thumbUrl": "/assets/products/producto-vino-caritos-estate-malbec-thumb.jpg"
+  },
+  {
+    "id": "producto-vino-santa-brasa-malbec",
+    "name": "Vino Santa Brasa Malbec",
+    "imageUrl": "/assets/products/producto-vino-santa-brasa-malbec.jpg",
+    "thumbUrl": "/assets/products/producto-vino-santa-brasa-malbec-thumb.jpg"
+  },
+  {
+    "id": "producto-aceite-alauco-flor-mia-500ml",
+    "name": "Aceite Alauco Flor Mia 500 ml",
+    "imageUrl": "/assets/products/producto-aceite-alauco-flor-mia-500ml.jpg",
+    "thumbUrl": "/assets/products/producto-aceite-alauco-flor-mia-500ml-thumb.jpg"
+  },
+  {
+    "id": "producto-aceitunas-negras-gema-oliv-1kg-b",
+    "name": "Aceitunas negras Gema Oliv 1 kg · foto 2",
+    "imageUrl": "/assets/products/producto-aceitunas-negras-gema-oliv-1kg-b.jpg",
+    "thumbUrl": "/assets/products/producto-aceitunas-negras-gema-oliv-1kg-b-thumb.jpg"
   }
 ]
