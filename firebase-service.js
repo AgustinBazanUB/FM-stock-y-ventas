@@ -375,7 +375,7 @@ export async function transferLocationStock({sourceLocationId, targetLocationId,
     transaction.set(transferRef,{
       type:"location_transfer",locationId:sourceLocationId,productId:"",
       sourceLocationId,sourceLocationName:sourceLocation.name||"Ubicación de origen",
-      destinationLocationId,targetLocationName:targetLocation.name||"Ubicación de destino",
+      destinationLocationId:targetLocationId,targetLocationName:targetLocation.name||"Ubicación de destino",
       itemCount:movements.length,qty:totalQty,items:movements,
       reason:`Transferencia de stock: ${sourceLocation.name||sourceLocationId} → ${targetLocation.name||targetLocationId}`,
       userId:user?.id||"",userName:user?.name||"Administrador",createdAt:serverTimestamp()

@@ -4,7 +4,7 @@ import {
   subscribeLocationSales, deleteSaleTransaction, restoreSaleTransaction, listSellerSales, reauthenticateAdmin, deleteLocationLogical,
   restoreLocation, deleteProductLogical, restoreProduct, deleteDiscountLogical, restoreDiscount, transferLocationStock,
   deleteLocationStock, deleteSellerLogical, listSalesByDateRange, pauseLocation, getKeyboardShortcuts, saveKeyboardShortcuts
-} from "./firebase-service.js?v=24";
+} from "./firebase-service.js?v=25";
 import {$, $$, escapeHtml, money, dateTime, dateOnly, timeOnly, toast, openModal, confirmDialog, setBusy, formDataObject, imageOrPlaceholder, downloadCsv, panelSwitcherHtml, setupPanelSwitcher} from "./utils.js";
 import {recordNextKey, AdminKeyboardNavigation, SELLER_ACTION_SHORTCUTS, sameShortcut, keyIdentity} from "./keyboard.js";
 import {listProductImages} from "./image-catalog.js";
