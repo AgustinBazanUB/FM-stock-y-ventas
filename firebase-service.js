@@ -300,6 +300,92 @@ export async function addStock({locationId, productId, qty, reason, user}) {
   });
 }
 
+export async function transferLocationStock({sourceLocationId, targetLocationId, user}) {
+  if (!sourceLocationId || !targetLocationId || sourceLocationId === targetLocationId) throw new Error("Elegí una ubicación activa distinta del origen");
+
+  const sourceLocationRef = doc(db,"locations",sourceLocationId);
+  const targetLocationRef = doc(db,"locations",targetLocationId);
+  const sourceItems = (await listLocationStock(sourceLocationId)).filter(item=>item.deleted!==true);
+  if (!sourceItems.length) throw new Error("La ubicación no tiene productos cargados para transferir");
+  if (sourceItems.length > 249) throw new Error("Esta ubicación tiene demasiados productos para transferirlos en una sola operación");
+
+  const sourceStockRefs = sourceItems.map(item=>doc(db,"locationStock",sourceLocationId,"items",item.id));
+  const targetStockRefs = sourceItems.map(item=>doc(db,"locationStock",targetLocationId,"items",item.id));
+  const transferRef = doc(collection(db,"stockMovements"));
+  let result = null;
+
+  await runTransaction(db,async transaction=>{
+    const refs=[sourceLocationRef,targetLocationRef,...sourceStockRefs,...targetStockRefs];
+    const snapshots=await Promise.all(refs.map(ref=>transaction.get(ref)));
+    const sourceLocationSnap=snapshots[0],targetLocationSnap=snapshots[1];
+    if(!sourceLocationSnap.exists()||sourceLocationSnap.data().deleted===true)throw new Error("La ubicación de origen ya no está disponible");
+    if(!targetLocationSnap.exists()||targetLocationSnap.data().deleted===true)throw new Error("La ubicación de destino ya no está disponible");
+    const sourceLocation={id:sourceLocationSnap.id,...sourceLocationSnap.data()};
+    const targetLocation={id:targetLocationSnap.id,...targetLocationSnap.data()};
+    if(isLocationActiveNow(sourceLocation))throw new Error("La ubicación de origen volvió a estar activa; actualizá la lista e intentá nuevamente");
+    if(!isLocationActiveNow(targetLocation))throw new Error("La ubicación elegida dejó de estar activa; elegí otra ubicación");
+
+    const sourceSnaps=snapshots.slice(2,2+sourceItems.length);
+    const targetSnaps=snapshots.slice(2+sourceItems.length);
+    const movements=[];
+    sourceSnaps.forEach((sourceSnap,index)=>{
+      if(!sourceSnap.exists()||sourceSnap.data().deleted===true)return;
+      const sourceData=sourceSnap.data();
+      const sourceCurrent=Number(sourceData.currentStock||0);
+      if(!Number.isInteger(sourceCurrent))throw new Error(`El stock de ${sourceData.productName||sourceItems[index].productName||"un producto"} no es un número entero`);
+      const targetSnap=targetSnaps[index];
+      const targetData=targetSnap.exists()?targetSnap.data():null;
+      const targetExists=Boolean(targetData&&targetData.deleted!==true);
+      const targetPrevious=targetExists?Number(targetData.currentStock||0):0;
+      if(!Number.isInteger(targetPrevious))throw new Error(`El stock de destino de ${sourceData.productName||sourceItems[index].productName||"un producto"} no es un número entero`);
+      const targetNext=targetPrevious+sourceCurrent;
+      const productDeleted=sourceData.productDeleted===true||targetData?.productDeleted===true;
+      const targetPayload=targetExists
+        ? {currentStock:targetNext,...(productDeleted?{productDeleted:true,active:false}:{}),updatedAt:serverTimestamp()}
+        : {
+          productId:sourceData.productId||sourceSnap.id,
+          productName:sourceData.productName||sourceItems[index].productName||"Producto",
+          abbreviation:sourceData.abbreviation||"",
+          categoryId:sourceData.categoryId||"",categoryName:sourceData.categoryName||"",
+          imageUrl:sourceData.imageUrl||"",thumbUrl:sourceData.thumbUrl||"",
+          price:Number.isInteger(Number(sourceData.price))?Number(sourceData.price):0,
+          initialStock:0,currentStock:targetNext,
+          yellowAlertQty:Number.isInteger(Number(sourceData.yellowAlertQty))?Number(sourceData.yellowAlertQty):0,
+          redAlertQty:Number.isInteger(Number(sourceData.redAlertQty))?Number(sourceData.redAlertQty):0,
+          active:!productDeleted&&sourceData.active!==false,
+          buttonKey:sourceData.buttonKey||"",buttonCode:sourceData.buttonCode||"",buttonLabel:sourceData.buttonLabel||"",
+          deleted:false,deletedAt:null,productDeleted,updatedAt:serverTimestamp()
+        };
+
+      transaction.update(sourceStockRefs[index],{
+        currentStock:0,active:false,lastTransferId:transferRef.id,lastTransferToLocationId:targetLocationId,
+        lastTransferAt:serverTimestamp(),updatedAt:serverTimestamp()
+      });
+      transaction.set(targetStockRefs[index],targetPayload,{merge:true});
+      movements.push({
+        productId:sourceData.productId||sourceSnap.id,
+        productName:sourceData.productName||sourceItems[index].productName||"Producto",
+        qty:sourceCurrent,sourcePreviousStock:sourceCurrent,sourceNewStock:0,
+        destinationPreviousStock:targetPrevious,destinationNewStock:targetNext,
+        destinationProductCreated:!targetExists
+      });
+    });
+    if(!movements.length)throw new Error("El stock de origen cambió y ya no hay productos para transferir");
+    const totalQty=movements.reduce((sum,item)=>sum+item.qty,0);
+    transaction.set(transferRef,{
+      type:"location_transfer",locationId:sourceLocationId,productId:"",
+      sourceLocationId,sourceLocationName:sourceLocation.name||"Ubicación de origen",
+      destinationLocationId,targetLocationName:targetLocation.name||"Ubicación de destino",
+      itemCount:movements.length,qty:totalQty,items:movements,
+      reason:`Transferencia de stock: ${sourceLocation.name||sourceLocationId} → ${targetLocation.name||targetLocationId}`,
+      userId:user?.id||"",userName:user?.name||"Administrador",createdAt:serverTimestamp()
+    });
+    result={productCount:movements.length,totalQty,destinationLocationName:targetLocation.name||"la ubicación activa"};
+  });
+
+  return result;
+}
+
 function cleanSaleItems(items) {
   return items.reduce((result, item) => {
     const qty = wholeQuantity(item.qty, `La cantidad de ${item.name || item.productName || "un producto"}`);

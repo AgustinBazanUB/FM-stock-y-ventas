@@ -2,9 +2,9 @@ import {
   listUsers, listProducts, listProductCategories, listLocations, listDiscounts, listLocationStock, saveLocation, saveProduct, saveProductCategory, saveDiscount,
   saveUser, createSellerAccount, syncSellerAssignments, configureStock, addStock, subscribeLocationStock,
   subscribeLocationSales, deleteSaleTransaction, restoreSaleTransaction, listSellerSales, reauthenticateAdmin, deleteLocationLogical,
-  restoreLocation, deleteProductLogical, restoreProduct, deleteDiscountLogical, restoreDiscount,
+  restoreLocation, deleteProductLogical, restoreProduct, deleteDiscountLogical, restoreDiscount, transferLocationStock,
   deleteLocationStock, deleteSellerLogical, listSalesByDateRange, pauseLocation, getKeyboardShortcuts, saveKeyboardShortcuts
-} from "./firebase-service.js";
+} from "./firebase-service.js?v=24";
 import {$, $$, escapeHtml, money, dateTime, dateOnly, timeOnly, toast, openModal, confirmDialog, setBusy, formDataObject, imageOrPlaceholder, downloadCsv, panelSwitcherHtml, setupPanelSwitcher} from "./utils.js";
 import {recordNextKey, AdminKeyboardNavigation, SELLER_ACTION_SHORTCUTS, sameShortcut, keyIdentity} from "./keyboard.js";
 import {listProductImages} from "./image-catalog.js";
@@ -397,13 +397,33 @@ function renderLocations() {
   const sellers = activeSellers();
   const locations = visibleLocations();
   $("#admin-content", state.root).innerHTML = `<div class="page-head"><h1>Ubicaciones y eventos</h1><div class="actions"><button class="btn btn-primary" id="new-location">+ Nueva ubicación</button></div></div>
-  <div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Código</th><th>Fechas activas</th><th>Vendedores</th><th>Estado</th><th></th></tr></thead><tbody>${locations.map(location => {const activity=locationActivity(location),canPause=activity.active,canReactivate=!activity.active;return `<tr><td data-label="Nombre">${escapeHtml(location.name)}</td><td data-label="Código">${escapeHtml(location.codePrefix)}</td><td data-label="Fechas activas">${escapeHtml(locationDateRange(location))}</td><td data-label="Vendedores">${(location.assignedSellerIds||[]).map(id=>escapeHtml(sellers.find(s=>s.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado">${locationStatusBadge(location)}</td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-location="${location.id}">Editar</button>${canPause?`<button class="btn btn-ghost btn-small" data-pause-location="${location.id}">Pausar</button>`:""}${canReactivate?`<button class="btn btn-primary btn-small" data-reactivate-location="${location.id}">Reactivar ubicación</button>`:""}<button class="btn btn-ghost btn-small" data-sales-location="${location.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-location="${location.id}">Eliminar ubicación</button></div></td></tr>`;}).join("") || `<tr><td colspan="6"><div class="empty">Creá la primera ubicación para empezar</div></td></tr>`}</tbody></table></div>`;
+  <div class="table-wrap"><table class="responsive"><thead><tr><th>Nombre</th><th>Código</th><th>Fechas activas</th><th>Vendedores</th><th>Estado</th><th></th></tr></thead><tbody>${locations.map(location => {const activity=locationActivity(location),canPause=activity.active,canReactivate=!activity.active;return `<tr><td data-label="Nombre">${escapeHtml(location.name)}</td><td data-label="Código">${escapeHtml(location.codePrefix)}</td><td data-label="Fechas activas">${escapeHtml(locationDateRange(location))}</td><td data-label="Vendedores">${(location.assignedSellerIds||[]).map(id=>escapeHtml(sellers.find(s=>s.id===id)?.name||"?")).join(", ")||"—"}</td><td data-label="Estado">${locationStatusBadge(location)}</td><td data-label="Acciones"><div class="table-actions"><button class="btn btn-secondary btn-small" data-edit-location="${location.id}">Editar</button>${canPause?`<button class="btn btn-ghost btn-small" data-pause-location="${location.id}">Pausar</button>`:""}${canReactivate?`<button class="btn btn-primary btn-small" data-reactivate-location="${location.id}">Reactivar ubicación</button><button class="btn btn-secondary btn-small" data-transfer-location-stock="${location.id}">Transferir stock</button>`:""}<button class="btn btn-ghost btn-small" data-sales-location="${location.id}">Ventas</button><button class="btn btn-danger btn-small" data-delete-location="${location.id}">Eliminar ubicación</button></div></td></tr>`;}).join("") || `<tr><td colspan="6"><div class="empty">Creá la primera ubicación para empezar</div></td></tr>`}</tbody></table></div>`;
   $("#new-location").onclick = () => locationForm();
   $$('[data-edit-location]').forEach(button => button.onclick = () => locationForm(state.locations.find(item => item.id === button.dataset.editLocation)));
   $$('[data-pause-location]').forEach(button => button.onclick = () => pauseLocationForm(locations.find(item => item.id === button.dataset.pauseLocation)));
   $$('[data-reactivate-location]').forEach(button => button.onclick = () => reactivateLocationForm(locations.find(item => item.id === button.dataset.reactivateLocation)));
+  $$('[data-transfer-location-stock]').forEach(button => button.onclick = () => transferLocationStockForm(locations.find(item => item.id === button.dataset.transferLocationStock),button));
   $$('[data-sales-location]').forEach(button => button.onclick = () => { state.selectedLocationId=button.dataset.salesLocation; state.salesLimit=200; renderLocationSelector(); subscribeSelected(); switchSection("sales"); });
   $$('[data-delete-location]').forEach(button=>button.onclick=()=>deleteLocationForm(locations.find(item=>item.id===button.dataset.deleteLocation)));
+}
+
+async function transferLocationStockForm(location, trigger) {
+  if(!location||location.deleted===true||isLocationActiveNow(location))return toast("Solo podés transferir stock desde una ubicación inactiva","error");
+  setBusy(trigger,true,"Cargando…");
+  const modal=openModal({title:`Transferir stock · ${location.name}`,content:`<div class="empty">Cargando el stock de ${escapeHtml(location.name)}…</div>`});
+  try{
+    const sourceItems=(await listLocationStock(location.id)).filter(item=>item.deleted!==true);
+    const destinations=activeLocations().filter(item=>item.id!==location.id);
+    const totalUnits=sourceItems.reduce((sum,item)=>sum+Number(item.currentStock||0),0);
+    const modalBody=$(".modal-body",modal.root);
+    if(!modalBody)return;
+    if(!sourceItems.length){modalBody.innerHTML=`<p>No hay productos cargados para transferir. El stock de esta ubicación se conserva.</p><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cerrar</button></div>`;$(".modal-cancel",modal.root).onclick=modal.close;return;}
+    if(!destinations.length){modalBody.innerHTML=`<p>No hay otras ubicaciones activas disponibles. El stock de esta ubicación se conserva hasta que haya un destino activo.</p><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cerrar</button></div>`;$(".modal-cancel",modal.root).onclick=modal.close;return;}
+    modalBody.innerHTML=`<p>Se transferirán los ${sourceItems.length} productos cargados, incluidos los que tienen stock cero. La cantidad actual se sumará al destino; el origen quedará en cero y conservará sus registros.</p><p class="muted">Existencia neta actual en origen: ${totalUnits} unidades.</p><form id="transfer-location-stock-form"><label>Ubicación activa de destino<select name="targetLocationId" required>${destinations.map(item=>`<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select></label><div class="modal-actions"><button type="button" class="btn btn-ghost modal-cancel">Cancelar</button><button class="btn btn-primary">Transferir stock</button></div></form>`;
+    $(".modal-cancel",modal.root).onclick=modal.close;
+    $("#transfer-location-stock-form",modal.root).onsubmit=async event=>{event.preventDefault();const button=event.submitter;const targetLocationId=formDataObject(event.currentTarget).targetLocationId;setBusy(button,true,"Transfiriendo…");try{const result=await transferLocationStock({sourceLocationId:location.id,targetLocationId,user:state.profile});modal.close();renderLocations();toast(`Stock transferido a ${result.destinationLocationName}. Los registros del origen se conservaron con cantidad cero.`,"success");}catch(error){toast(error.message,"error");setBusy(button,false);}};
+  }catch(error){modal.close();toast(`No se pudo cargar el stock: ${error.message}`,"error");}
+  finally{setBusy(trigger,false);}
 }
 
 function pauseLocationForm(location){
