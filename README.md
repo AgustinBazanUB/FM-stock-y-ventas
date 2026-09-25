@@ -74,6 +74,10 @@ La app usa un catálogo local para no requerir Blaze:
 - En **Ventas**, una anulación devuelve stock y deja la venta marcada como anulada.
 - En **Exportar**, filtrá por fecha o vendedor y descargá ventas o stock en CSV.
 
+### Transferir stock de una ubicación inactiva
+
+En **Ubicaciones**, elegí **Transferir stock** en una ubicación inactiva y seleccioná una ubicación activa como destino. Se transfieren todos los productos cargados, incluso los que están en cero; los que todavía no existen en el destino se crean automáticamente. Los registros del origen se conservan y quedan en cero. La operación registra un movimiento auditable con origen, destino y detalle por producto, y valida que el origen siga inactivo y el destino activo.
+
 La sección **Ayuda** del panel resume el orden de configuración y el uso diario. Todos los precios, descuentos y totales se manejan sin decimales.
 
 Las bajas son lógicas: nunca borran ventas ni movimientos históricos. Productos, ubicaciones y descuentos se pueden recuperar desde sus secciones **… eliminados**. Para eliminar una ubicación, el administrador debe volver a confirmar su email y contraseña. Los vendedores eliminados pierden sus asignaciones y no se restauran desde el panel; su cuenta de Firebase Authentication sigue existiendo, pero queda bloqueada por el perfil inactivo.
